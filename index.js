@@ -67,7 +67,7 @@ class BraviaPlatform {
       this.log('[Bravia] Removing TV ' + accessory.displayName + ' from HomeKit (not in config)');
       this.api.on('didFinishLaunching', function () {
         if (!accessory.context.isexternal) {
-          self.api.unregisterPlatformAccessories('homebridge-bravia', 'BraviaPlatform', [accessory]);
+          self.api.unregisterPlatformAccessories('homebridge-bravia-enhanced', 'BraviaPlatform', [accessory]);
         } else {
           // TODO: delete context file? not here, we're not called
         }
@@ -684,7 +684,7 @@ class SonyTV {
       this.accessory.context.isRegisteredInHomeKit = true;
       if (!this.accessory.context.isexternal) {
         if (this.debug) this.log('[Bravia] Registered as platform accessory');
-        this.platform.api.registerPlatformAccessories('homebridge-bravia', 'BraviaPlatform', [this.accessory]);
+        this.platform.api.registerPlatformAccessories('homebridge-bravia-enhanced', 'BraviaPlatform', [this.accessory]);
       } else {
         this.log('[Bravia] Publishing as external accessory');
         try {
@@ -695,7 +695,7 @@ class SonyTV {
         } catch (e) {
           this.log('[Bravia] ERROR saving context: ' + e);
         }
-        this.platform.api.publishExternalAccessories('homebridge-bravia', [this.accessory]);
+        this.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [this.accessory]);
       }
     } else if (changeDone) {
       if (this.debug) this.log('[Bravia] Updating accessory for ' + this.name);
@@ -1897,5 +1897,5 @@ module.exports = function (homebridge) {
   Characteristic = homebridge.hap.Characteristic;
   UUIDGen = homebridge.hap.uuid;
   STORAGE_PATH = updateStorage(homebridge.user.storagePath());
-  homebridge.registerPlatform('homebridge-bravia', 'BraviaPlatform', BraviaPlatform, true);
+  homebridge.registerPlatform('homebridge-bravia-enhanced', 'BraviaPlatform', BraviaPlatform, true);
 };

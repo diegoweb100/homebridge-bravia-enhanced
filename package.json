@@ -27,7 +27,7 @@
   "homepage": "https://github.com/diegoweb100/homebridge-bravia-enhanced#readme",
   "engines": {
     "homebridge": "^1.6.0 || ^2.0.0",
-    "node": ">=18.20.4"
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "base-64": "^0.1.0",
