@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bravia Enhanced - Channel Selector</title>
+
+  <!-- VERSION: channel-selector.html v1.0.0 (homebridge-bravia-enhanced by diegoweb100) -->
+  <style>
+    :root{
+      --bg:#0b1020; --panel:rgba(255,255,255,.06); --text:rgba(255,255,255,.92);
+      --muted:rgba(255,255,255,.70); --border:rgba(255,255,255,.10); --shadow:0 18px 50px rgba(0,0,0,.45);
+      --primary:#6d5efc; --primary2:#22c55e; --danger:#ef4444; --warn:#f59e0b; --radius:16px;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; padding:28px 16px 56px;
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+      color:var(--text);
+      background:
+        radial-gradient(1200px 800px at 20% -10%, rgba(109,94,252,.35), transparent 60%),
+        radial-gradient(900px 700px at 90% 10%, rgba(34,197,94,.22), transparent 60%),
+        radial-gradient(1000px 900px at 50% 110%, rgba(59,130,246,.18), transparent 60%),
+        var(--bg);
+    }
+    .container{max-width:1100px;margin:0 auto}
+    .hidden{display:none !important}
+
+    .header{
+      display:flex; gap:16px; align-items:flex-start; justify-content:space-between;
+      padding:18px; border:1px solid var(--border);
+      background:linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
+      backdrop-filter:blur(10px);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+    }
+    .header h1{margin:0;font-size:22px}
+    .subtitle{margin-top:6px;color:var(--muted);font-size:14px}
+
+    .tv-selector{
+      margin-top:16px; padding:14px 16px;
+      border-radius:var(--radius); border:1px solid var(--border);
+      background:var(--panel); backdrop-filter:blur(10px);
+      display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+    }
+    .tv-selector label{color:var(--muted);font-size:13px}
+    select,input[type="text"]{
+      appearance:none; background:rgba(255,255,255,.06); border:1px solid var(--border);
+      color:var(--text); border-radius:12px; padding:10px 12px; font-size:14px; outline:none;
+    }
+    select:focus,input[type="text"]:focus{border-color:rgba(109,94,252,.55); box-shadow:0 0 0 4px rgba(109,94,252,.18)}
+
+    .controls,.stats-bar,.channel-list,.loading,.empty-state,.save-section{
+      margin-top:16px; border-radius:var(--radius); border:1px solid var(--border);
+      background:var(--panel); backdrop-filter:blur(10px);
+      box-shadow:0 10px 30px rgba(0,0,0,.25);
+    }
+    .controls{padding:14px 16px}
+    .search-filter{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
+    .search-box{flex:1 1 260px}
+    #search-input{width:100%}
+    .quick-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+
+    .btn{
+      border:1px solid var(--border); background:rgba(255,255,255,.06);
+      color:var(--text); padding:10px 12px; border-radius:12px; cursor:pointer;
+      font-size:14px; transition:transform .08s ease, background .15s ease, border-color .15s ease;
+      user-select:none;
+    }
+    .btn:hover{background:rgba(255,255,255,.10); border-color:rgba(255,255,255,.16)}
+    .btn:active{transform:translateY(1px)}
+    .btn:disabled{opacity:.55; cursor:not-allowed}
+
+    .btn-primary{
+      background:linear-gradient(135deg, rgba(109,94,252,.95), rgba(109,94,252,.65));
+      border-color:rgba(109,94,252,.55);
+    }
+    .btn-primary:hover{background:linear-gradient(135deg, rgba(109,94,252,1), rgba(109,94,252,.78))}
+    .btn-save{
+      background:linear-gradient(135deg, rgba(34,197,94,.95), rgba(34,197,94,.65));
+      border-color:rgba(34,197,94,.55);
+    }
+
+    .stats-bar{padding:14px 16px}
+    .stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    .stat-card{padding:12px;border-radius:14px;border:1px solid var(--border);background:rgba(255,255,255,.06)}
+    .stat-card.warning{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.10)}
+    .label{color:var(--muted);font-size:12px;margin-bottom:6px}
+    .value{font-size:18px;font-weight:650}
+
+    .channel-list{padding:10px 0; overflow:hidden}
+    .channel-items{max-height:520px;overflow:auto;padding:8px 10px 14px}
+    .section-header{margin:14px 8px 6px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+    .section-sub{margin:-2px 8px 10px;font-size:12px;color:rgba(255,255,255,.55)}
+    .channel-item{
+      display:flex;align-items:center;justify-content:space-between;gap:12px;
+      padding:12px;margin:8px 6px;border-radius:14px;border:1px solid var(--border);
+      background:rgba(255,255,255,.06); cursor:pointer;
+    }
+    .channel-item.selected{border-color:rgba(34,197,94,.55); background:rgba(34,197,94,.10)}
+    .channel-left{display:flex;align-items:center;gap:10px;min-width:0}
+    .channel-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .badge{
+      font-size:11px;padding:5px 8px;border-radius:999px;border:1px solid var(--border);
+      background:rgba(255,255,255,.06); color:var(--muted); text-transform:uppercase; letter-spacing:.6px;
+    }
+    .badge.tv{border-color:rgba(59,130,246,.45);background:rgba(59,130,246,.10);color:rgba(255,255,255,.86)}
+    .badge.hdmi{border-color:rgba(109,94,252,.45);background:rgba(109,94,252,.10);color:rgba(255,255,255,.86)}
+    .badge.app{border-color:rgba(16,185,129,.45);background:rgba(16,185,129,.10);color:rgba(255,255,255,.86)}
+
+    .loading,.empty-state{padding:18px 16px; text-align:center; color:var(--muted)}
+    .spinner{width:26px;height:26px;border-radius:999px;border:3px solid rgba(255,255,255,.18);border-top-color:rgba(255,255,255,.70);display:inline-block;animation:spin .9s linear infinite;margin-bottom:10px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    .toast-container{position:fixed;top:14px;right:14px;z-index:9999;display:flex;flex-direction:column;gap:10px;pointer-events:none}
+    .toast{pointer-events:auto;min-width:280px;max-width:420px;padding:12px;border-radius:14px;border:1px solid var(--border);background:rgba(17,24,39,.92);box-shadow:var(--shadow);opacity:0;transform:translateY(-6px);animation:toastIn .18s ease-out forwards}
+    @keyframes toastIn{to{transform:translateY(0);opacity:1}}
+    .toast-title{font-weight:650;font-size:13px;margin-bottom:4px}
+    .toast-msg{color:var(--muted);font-size:13px;line-height:1.35}
+    .toast.success{border-color:rgba(34,197,94,.45)}
+    .toast.error{border-color:rgba(239,68,68,.45)}
+    .toast.info{border-color:rgba(109,94,252,.45)}
+    .toast.warn{border-color:rgba(245,158,11,.45)}
+
+    @media (max-width:720px){
+      .stats-grid{grid-template-columns:1fr}
+      .header{flex-direction:column;align-items:flex-start}
+    }
+  </style>
+</head>
+<body>
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>📺 Bravia Enhanced - Channel Selector</h1>
+        <div class="subtitle">Select your favorite channels for HomeKit</div>
+      </div>
+      <div id="version-pill" class="badge" title="Page version">v1.0.0</div>
+    </div>
+
+    <div class="tv-selector">
+      <label for="tv-select">Select TV:</label>
+      <select id="tv-select"><option value="">Loading TVs...</option></select>
+
+      <!-- ONE pairing button only (duplicate ids break JS) -->
+      <button id="pairing-btn" class="btn hidden" disabled>Pairing PIN</button>
+    </div>
+
+    <div id="status-container"></div>
+
+    <div class="stats-bar hidden" id="stats-bar">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="label">Selected Channels</div>
+          <div class="value" id="selected-count">0</div>
+        </div>
+        <div class="stat-card warning">
+          <div class="label">Maximum Allowed</div>
+          <div class="value" id="max-count">98</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Available Channels</div>
+          <div class="value" id="total-count">0</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls hidden" id="controls">
+      <div class="search-filter">
+        <div class="search-box">
+          <input type="text" id="search-input" placeholder="Search channels...">
+        </div>
+        <select id="type-filter">
+          <option value="all">All Types</option>
+          <option value="hdmi">HDMI</option>
+          <option value="tv">TV Channels</option>
+          <option value="app">Applications</option>
+        </select>
+      </div>
+
+      <!-- TOP BUTTON BAR (Save next to Rescan as requested) -->
+      <div class="quick-actions">
+        <button class="btn" id="select-all">Select All</button>
+        <button class="btn" id="select-none">Clear All</button>
+        <button class="btn" id="select-hd">HD Channels Only</button>
+        <button class="btn" id="select-top20">Top 20</button>
+        <button class="btn" id="rescan-btn">🔄 Rescan TV</button>
+        <button class="btn btn-save hidden" id="save-btn-top">💾 Save Selection</button>
+      </div>
+    </div>
+
+    <div id="channel-list-container" class="hidden">
+      <div class="channel-list" id="channel-list"></div>
+    </div>
+
+    <div class="loading hidden" id="loading">
+      <div class="spinner"></div>
+      <p>Scanning TV for channels...</p>
+    </div>
+
+    <div class="empty-state" id="empty-state">
+      <h2>No TV Selected</h2>
+      <p>Please select a TV from the dropdown above, then click "Scan TV" to start.</p>
+    </div>
+
+    <div class="save-section" id="initial-scan" style="padding:14px 16px;text-align:center">
+      <button class="btn btn-primary" id="scan-btn">🔍 Scan TV Channels</button>
+    </div>
+
+    <!-- BOTTOM SAVE (kept, but mirrors top) -->
+    <div class="save-section hidden" id="save-section" style="padding:14px 16px;text-align:center">
+      <button class="btn btn-save" id="save-btn">💾 Save Selection</button>
+    </div>
+  </div>
+
+  <script src="channel-selector.js"></script>
+</body>
+</html>

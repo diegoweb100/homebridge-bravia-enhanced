@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bravia Enhanced - Pairing PIN</title>
+  <style>
+        :root{
+            --bg: #0b1020;
+            --panel: rgba(255,255,255,.06);
+            --panel-2: rgba(255,255,255,.08);
+            --text: rgba(255,255,255,.92);
+            --muted: rgba(255,255,255,.70);
+            --border: rgba(255,255,255,.10);
+            --shadow: 0 18px 50px rgba(0,0,0,.45);
+            --primary: #6d5efc;
+            --primary-2: #22c55e;
+            --danger: #ef4444;
+            --warn: #f59e0b;
+            --radius: 16px;
+        }
+
+        *{ box-sizing:border-box; }
+        .hidden{ display:none !important; }
+
+        html, body{ height:100%; }
+        body{
+            margin:0;
+            font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+            color:var(--text);
+            background:
+                radial-gradient(1200px 800px at 20% -10%, rgba(109,94,252,.35), transparent 60%),
+                radial-gradient(900px 700px at 90% 10%, rgba(34,197,94,.22), transparent 60%),
+                radial-gradient(1000px 900px at 50% 110%, rgba(59,130,246,.18), transparent 60%),
+                var(--bg);
+            padding: 28px 16px 56px;
+        }
+
+        .container{
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        .header{
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:16px;
+            padding: 18px 18px;
+            border:1px solid var(--border);
+            background: linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
+            backdrop-filter: blur(10px);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+        .header h1{
+            margin:0;
+            font-size: 22px;
+            letter-spacing: .2px;
+        }
+        .subtitle{
+            margin-top:6px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+        .unsaved-indicator{
+            align-self:center;
+            padding: 6px 10px;
+            border-radius: 999px;
+            border:1px solid rgba(245,158,11,.35);
+            background: rgba(245,158,11,.12);
+            color: rgba(255,255,255,.92);
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .tv-selector{
+            margin-top: 16px;
+            padding: 14px 16px;
+            border-radius: var(--radius);
+            border:1px solid var(--border);
+            background: var(--panel);
+            backdrop-filter: blur(10px);
+            display:flex;
+            gap:12px;
+            align-items:center;
+        }
+        .tv-selector label{ color: var(--muted); font-size: 13px; }
+        select, input[type="text"]{
+            appearance:none;
+            background: rgba(255,255,255,.06);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 12px;
+            padding: 10px 12px;
+            font-size: 14px;
+            outline: none;
+        }
+        select:focus, input[type="text"]:focus{
+            border-color: rgba(109,94,252,.55);
+            box-shadow: 0 0 0 4px rgba(109,94,252,.18);
+        }
+
+        /* Layout panels */
+        .controls, .stats, .channel-list, .loading-section, .empty-section{
+            margin-top: 16px;
+            border-radius: var(--radius);
+            border:1px solid var(--border);
+            background: var(--panel);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 10px 30px rgba(0,0,0,.25);
+        }
+
+        .controls{
+            padding: 14px 16px;
+        }
+        .controls h2{
+            margin:0 0 10px 0;
+            font-size: 16px;
+        }
+
+        .search-filter{
+            display:flex;
+            flex-wrap:wrap;
+            gap:10px;
+            align-items:center;
+            margin-bottom: 12px;
+        }
+        .search-box{ flex:1 1 260px; }
+        #search-input{ width:100%; }
+
+        .quick-actions{
+            display:flex;
+            flex-wrap:wrap;
+            gap:10px;
+            margin-top: 10px;
+        }
+
+        .btn{
+            border:1px solid var(--border);
+            background: rgba(255,255,255,.06);
+            color: var(--text);
+            padding: 10px 12px;
+            border-radius: 12px;
+            cursor:pointer;
+            font-size: 14px;
+            transition: transform .08s ease, background .15s ease, border-color .15s ease;
+            user-select:none;
+        }
+        .btn:hover{ background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.16); }
+        .btn:active{ transform: translateY(1px); }
+        .btn-primary{
+            background: linear-gradient(135deg, rgba(109,94,252,.95), rgba(109,94,252,.65));
+            border-color: rgba(109,94,252,.55);
+        }
+        .btn-primary:hover{ background: linear-gradient(135deg, rgba(109,94,252,1), rgba(109,94,252,.78)); }
+        .btn-danger{
+            background: rgba(239,68,68,.18);
+            border-color: rgba(239,68,68,.35);
+        }
+        .btn:disabled{
+            opacity:.55;
+            cursor:not-allowed;
+        }
+
+        .stats{
+            padding: 14px 16px;
+        }
+        .stats-grid{
+            display:grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .stat-card{
+            padding: 12px 12px;
+            border-radius: 14px;
+            border:1px solid var(--border);
+            background: rgba(255,255,255,.06);
+        }
+        .stat-label{
+            color: var(--muted);
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+        .stat-value{
+            font-size: 18px;
+            font-weight: 650;
+        }
+        .stat-card.warning{ border-color: rgba(245,158,11,.45); background: rgba(245,158,11,.10); }
+        .stat-card.danger{ border-color: rgba(239,68,68,.45); background: rgba(239,68,68,.12); }
+
+        .channel-list{
+            padding: 10px 0;
+            overflow:hidden;
+        }
+        .channel-list-header{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .channel-list-header h2{
+            margin:0;
+            font-size: 16px;
+        }
+        .channel-count-pill{
+            padding: 6px 10px;
+            border-radius: 999px;
+            border:1px solid var(--border);
+            background: rgba(255,255,255,.06);
+            color: var(--muted);
+            font-size: 12px;
+        }
+        .channel-items{
+            max-height: 520px;
+            overflow:auto;
+            padding: 8px 10px 14px;
+        }
+        .channel-item{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            padding: 12px 12px;
+            margin: 8px 6px;
+            border-radius: 14px;
+            border:1px solid var(--border);
+            background: rgba(255,255,255,.06);
+            cursor:pointer;
+            transition: background .15s ease, border-color .15s ease, transform .08s ease;
+        }
+        .channel-item:hover{ background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.16); }
+        .channel-item:active{ transform: translateY(1px); }
+        .channel-item.selected{
+            border-color: rgba(34,197,94,.55);
+            background: rgba(34,197,94,.10);
+        }
+        .channel-left{
+            display:flex;
+            align-items:center;
+            gap:10px;
+            min-width: 0;
+        }
+        .channel-checkbox{
+            width: 18px;
+            height: 18px;
+            border-radius: 6px;
+            border:1px solid rgba(255,255,255,.28);
+            background: rgba(255,255,255,.06);
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            flex:0 0 auto;
+        }
+        .channel-item.selected .channel-checkbox{
+            border-color: rgba(34,197,94,.75);
+            background: rgba(34,197,94,.25);
+        }
+        .channel-name{
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .channel-meta{
+            display:flex;
+            align-items:center;
+            gap:8px;
+            flex:0 0 auto;
+        }
+        .badge{
+            font-size: 11px;
+            padding: 5px 8px;
+            border-radius: 999px;
+            border:1px solid var(--border);
+            background: rgba(255,255,255,.06);
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: .6px;
+        }
+        .badge.tv{ border-color: rgba(59,130,246,.45); background: rgba(59,130,246,.10); color: rgba(255,255,255,.86); }
+        .badge.hdmi{ border-color: rgba(109,94,252,.45); background: rgba(109,94,252,.10); color: rgba(255,255,255,.86); }
+        .badge.app{ border-color: rgba(16,185,129,.45); background: rgba(16,185,129,.10); color: rgba(255,255,255,.86); }
+        .badge.hd{ border-color: rgba(245,158,11,.45); background: rgba(245,158,11,.10); color: rgba(255,255,255,.86); }
+
+        .status-container{
+            margin-top: 12px;
+            min-height: 0;
+        }
+
+        /* Loading / Empty */
+        .loading-section, .empty-section{
+            padding: 18px 16px;
+            text-align:center;
+            color: var(--muted);
+        }
+        .spinner{
+            width: 26px;
+            height: 26px;
+            border-radius: 999px;
+            border: 3px solid rgba(255,255,255,.18);
+            border-top-color: rgba(255,255,255,.70);
+            display:inline-block;
+            animation: spin 0.9s linear infinite;
+            margin-bottom: 10px;
+        }
+        @keyframes spin{ to { transform: rotate(360deg);} }
+
+        /* Toasts */
+        .toast-container{
+            position: fixed;
+            top: 14px;
+            right: 14px;
+            z-index: 9999;
+            display:flex;
+            flex-direction:column;
+            gap:10px;
+            pointer-events:none;
+        }
+        .toast{
+            pointer-events:auto;
+            min-width: 280px;
+            max-width: 420px;
+            padding: 12px 12px;
+            border-radius: 14px;
+            border:1px solid var(--border);
+            background: rgba(17,24,39,.92);
+            box-shadow: var(--shadow);
+            transform: translateY(-6px);
+            opacity: 0;
+            animation: toastIn .18s ease-out forwards;
+        }
+        @keyframes toastIn{ to { transform: translateY(0); opacity: 1; } }
+        .toast-title{
+            font-weight: 650;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+        .toast-msg{ color: var(--muted); font-size: 13px; line-height: 1.35; }
+        .toast.success{ border-color: rgba(34,197,94,.45); }
+        .toast.error{ border-color: rgba(239,68,68,.45); }
+        .toast.info{ border-color: rgba(109,94,252,.45); }
+        .toast.warn{ border-color: rgba(245,158,11,.45); }
+
+        /* Responsive */
+        @media (max-width: 720px){
+            .stats-grid{ grid-template-columns: 1fr; }
+            .header{ flex-direction: column; align-items:flex-start; }
+        }
+
+    </style>
+</head>
+<body>
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>Pairing PIN</h1>
+        <div class="subtitle">Enter the PIN shown on your TV to complete pairing.</div>
+      </div>
+      <div class="unsaved-indicator" id="pair-status">Checking status…</div>
+    </div>
+
+    <div class="tv-selector">
+      <label for="tv-name">TV</label>
+      <input id="tv-name" type="text" readonly />
+      <button id="back-btn" class="btn">Back to channels</button>
+    </div>
+
+    <div class="controls" id="pin-card">
+      <h2>Enter PIN</h2>
+      <div class="search-filter">
+        <div class="search-box" style="flex:1 1 260px;">
+          <input id="pin-input" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN (e.g. 1234)" />
+        </div>
+        <button id="submit-pin" class="btn btn-primary">Submit</button>
+      </div>
+      <div class="subtitle" style="margin: 0;">Tip: if the TV shows a new PIN, just submit again.</div>
+    </div>
+
+    <div class="empty-section hidden" id="paired-card">
+      <div style="font-size:34px; margin-bottom:6px;">✅</div>
+      <div style="font-size:18px; font-weight:700; margin-bottom:6px;">Already paired</div>
+      <div class="subtitle" style="margin:0;">You can go back to channel selection.</div>
+    </div>
+  </div>
+
+  <script src="/web/pairing.js"></script>
+</body>
+</html>

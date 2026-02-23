@@ -1,0 +1,7 @@
+node_modules/
+.homebridge/
+package-lock.json
+tags
+.DS_Store
+**/.DS_Store
+*.log
