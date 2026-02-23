@@ -1,5 +1,7 @@
 # homebridge-bravia-enhanced
 
+[![npm](https://img.shields.io/npm/v/homebridge-bravia-enhanced)](https://www.npmjs.com/package/homebridge-bravia-enhanced)
+
 > **Enhanced fork** of [homebridge-bravia](https://github.com/normen/homebridge-bravia) by Normen Hansen.  
 > Maintained by [diegoweb100](https://github.com/diegoweb100) — version 1.0.0
 
