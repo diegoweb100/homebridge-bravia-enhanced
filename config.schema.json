@@ -5,84 +5,74 @@
   "footerDisplay": "For documentation please see https://github.com/diegoweb100/homebridge-bravia-enhanced",
   "schema": {
     "type": "object",
+    "required": ["name"],
     "properties": {
       "name": {
         "title": "Platform Name",
         "description": "Name for this platform instance",
         "type": "string",
-        "default": "Bravia Enhanced",
-        "required": true
+        "default": "Bravia Enhanced"
       },
       "tvs": {
         "title": "Registered TVs",
-        "required": false,
         "type": "array",
         "items": {
-          "name": "TV Config",
+          "title": "TV Config",
           "type": "object",
+          "required": ["name", "ip"],
           "properties": {
             "name": {
               "title": "Name",
               "description": "The name of your TV in HomeKit",
-              "type": "string",
-              "required": true
+              "type": "string"
             },
             "ip": {
               "title": "IP / Hostname",
               "description": "The IP address or host name of your TV, find or set in your router",
-              "type": "string",
-              "required": true
+              "type": "string"
             },
             "port": {
               "title": "Port",
               "description": "HTTP port of the TV",
               "placeholder": "80",
-              "type": "number",
-              "required": false
+              "type": "number"
             },
             "serverPort": {
               "title": "PIN entry / Channel Selector server port",
               "placeholder": "8999",
-              "type": "number",
-              "required": false
+              "type": "number"
             },
             "channelSelectorPort": {
               "title": "Channel Selector port override",
               "description": "Override the port used for the Channel Selector web UI (defaults to serverPort)",
               "placeholder": "8999",
-              "type": "number",
-              "required": false
+              "type": "number"
             },
             "enableChannelSelector": {
               "title": "Enable Channel Selector UI",
               "description": "Enables the web-based Channel Selector. Disable if you don't need it.",
-              "type": "boolean",
-              "required": false
+              "type": "boolean"
             },
             "maxInputSources": {
               "title": "Max Input Sources",
               "description": "Maximum number of inputs to register in HomeKit. HomeKit hard limit is 98. Defaults to 98.",
               "placeholder": "98",
-              "type": "number",
-              "required": false
+              "type": "number"
             },
             "mac": {
               "title": "MAC address",
               "description": "DO NOT set unless you need to use WOL",
-              "type": "string",
-              "required": false
+              "type": "string"
             },
             "externalaccessory": {
               "title": "External Accessory",
               "description": "Workaround for multiple TVs and remote app, registers this TV as an external accessory",
-              "type": "boolean",
-              "required": false
+              "type": "boolean"
             },
             "debug": {
               "title": "Debug Log Output",
               "description": "Gives additional debug output in the log",
-              "type": "boolean",
-              "required": false
+              "type": "boolean"
             },
             "soundoutput": {
               "title": "Sound Output",
@@ -92,8 +82,7 @@
               "oneOf": [
                 { "title": "Speaker", "enum": ["speaker"] },
                 { "title": "Headphone", "enum": ["headphone"] }
-              ],
-              "required": false
+              ]
             },
             "tvsource": {
               "title": "TV Source",
@@ -103,8 +92,7 @@
                 { "title": "Satellite", "enum": ["tv:dvbs"] },
                 { "title": "Antenna", "enum": ["tv:dvbt"] },
                 { "title": "Cable", "enum": ["tv:dvbc"] }
-              ],
-              "required": false
+              ]
             },
             "applications": {
               "title": "App",
@@ -118,14 +106,12 @@
                     "type": "string"
                   }
                 }
-              },
-              "required": false
+              }
             },
             "sources": {
               "title": "Source",
               "description": "Defaults to: [extInput:hdmi, extInput:component, extInput:scart, extInput:cec, extInput:widi]. Adding entries to the list below will only show those inputs.",
               "type": "array",
-              "required": false,
               "items": {
                 "title": "Source Name",
                 "type": "string"
