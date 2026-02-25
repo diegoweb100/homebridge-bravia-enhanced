@@ -161,6 +161,14 @@ npm run test
 
 ---
 
+## Support
+
+If you find this plugin useful, consider buying me a coffee ☕
+
+[![PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/diegoweb100)
+
+---
+
 ## Credits
 
 Based on [homebridge-bravia](https://github.com/normen/homebridge-bravia) by **Normen Hansen**, which was itself inspired by "lombi"'s original Sony Bravia plugin.
