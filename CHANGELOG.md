@@ -6,13 +6,56 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## 1.0.0 — Enhanced fork by [diegoweb100](https://github.com/diegoweb100)
+## [1.0.5] - 2026-02-25
 
-This release is a significant enhancement of the original [homebridge-bravia](https://github.com/normen/homebridge-bravia) plugin (v2.4.9) by Normen Hansen. Full credit to the original author for the solid foundation.
+### Fixed
+- `CHANGELOG.md` reformatted to the standard `## [x.y.z] - YYYY-MM-DD` format so Homebridge UI can parse and display release notes correctly
 
-### New features vs. original
+---
 
-- **Homebridge 2.0 compatible** — `engines` updated to `^1.6.0 || ^2.0.0`, Node.js minimum raised to 18.20.4; removed deprecated `accessory.reachable` (removed in HAP-NodeJS v1 / HB 2.0)
+## [1.0.4] - 2026-02-24
+
+### Added
+- PayPal funding link in `package.json` — users can now support the developer directly from the Homebridge UI donation prompt
+
+---
+
+## [1.0.3] - 2026-02-24
+
+### Fixed
+- `config.schema.json`: replaced non-standard `"required": true/false` boolean flags on individual fields with a JSON Schema compliant `"required": ["name", "ip"]` array at the object level, as required by the Homebridge plugin verification checker
+
+---
+
+## [1.0.2] - 2026-02-24
+
+### Fixed
+- `config.schema.json`: added missing `"type": "object"` and `"properties"` wrapper to the schema root; added mandatory `name` property at platform level — all required by the Homebridge plugin verification checker
+
+### Changed
+- Log prefix changed from the static `[Bravia]` to `[TV Name]` for each device, making multi-TV setups easier to troubleshoot
+- `makeHttpRequest`: moved `http.request()` call inside the `try/catch` block for better error containment; added inner `try/catch` around the response callback to prevent unhandled exceptions crashing the plugin
+- `saveCookie`: removed `process.exit(1)` on cookie write error — the plugin now logs the error and continues instead of killing the Homebridge process
+
+### Added
+- `pollExternalInputsStatus()`: new polling method using `getCurrentExternalInputsStatus` v1.1 to track physical HDMI connection state
+- `hideDisconnectedInputs` config option: when `true`, HDMI inputs that are physically disconnected are automatically hidden in HomeKit
+- `/api/inputs` web API endpoint: exposes the cached HDMI connection status to the Channel Selector UI
+
+---
+
+## [1.0.1] - 2026-02-23
+
+### Changed
+- First publication to NPM registry
+
+---
+
+## [1.0.0] - 2026-02-23
+
+### Added
+- Initial release as enhanced fork of [homebridge-bravia](https://github.com/normen/homebridge-bravia) v2.4.9 by Normen Hansen
+- **Homebridge 2.0 compatible** — `engines` updated to `^1.6.0 || ^2.0.0`, Node.js minimum raised to 18.20.4; removed deprecated `accessory.reachable`
 - **Web-based Channel Selector UI** (`channel-selector.html` / `channel-selector.js`)
   - Browse all scanned TV channels, HDMI inputs and apps in a modern dark-themed interface
   - Search/filter by name or type (TV, HDMI, App)
@@ -25,38 +68,14 @@ This release is a significant enhancement of the original [homebridge-bravia](ht
   - Live pairing status indicator
   - Back-to-channels navigation
   - Toast notification system for all feedback
-- **Full-scan cache** (`sonytv-fullscan-<name>.json`)
-  - The complete channel list from the TV is saved to disk after every scan
-  - The web UI reads this cache so all channels are always visible regardless of the HomeKit 98-input limit
-- **User channel selection persistence** (`selected-channels-<name>.json`)
-  - The user's channel selection is stored to disk and re-applied on every Homebridge restart
-  - Changing the selection in the UI is reflected in HomeKit immediately without a restart
-- **HomeKit 98-input limit enforcement**
-  - Hard cap at 98 input sources (HomeKit limit = 100 services − TV − Speaker)
-  - Configurable via `maxInputSources` (capped at 98 automatically)
-  - Warning logged if the limit is exceeded
-- **TV channel counter with collision-free identifiers**
-  - TV tuner channels now use a dedicated identifier base (`TV_IDENTIFIER_BASE = 1000`) to avoid collisions with HDMI / App identifiers
-- **Improved application title matching**
-  - Fuzzy normalisation: strips punctuation, treats `+` as `plus`, matches prefix/suffix
-  - Prevents duplicate apps between the TV scan and the configured app list
-- **Per-TV debug logging** — already in 2.4.5 but now properly wired through all new code paths
-- **Verbose structured log prefixes** — `[PLATFORM]`, `[INIT]`, `[WEB]`, `[CACHE]`, `[SELECTION]`, etc. for easier troubleshooting
-- **Web server API endpoints** — `/api/channels`, `/api/pairing-status`, `/api/pin`, `/api/selection`, `/api/save-selection`, `/api/rescan`
-- **`uuid` npm package** — replaced the hand-rolled `uuidv4()` helper with the standard `uuid` package
-
-### Files added / replaced vs. original
-
-| File | Status |
-|---|---|
-| `index.js` | Heavily extended |
-| `channel-selector.html` | **New** |
-| `channel-selector.js` | **New** |
-| `pairing.html` | **New** |
-| `pairing.js` | **New** |
-| `config.schema.json` | Updated (`maxInputSources`, `channelSelectorPort`, `enableChannelSelector`) |
-| `package.json` | Updated (author, name, version, `uuid` dependency) |
-| `README.md` | Updated |
+- **Full-scan cache** (`sonytv-fullscan-<name>.json`) — complete channel list saved after every scan; web UI always shows all channels regardless of the HomeKit 98-input limit
+- **User channel selection persistence** (`selected-channels-<name>.json`) — selection survives Homebridge restarts and is reflected in HomeKit immediately
+- **HomeKit 98-input limit enforcement** — hard cap at 98 input sources, configurable via `maxInputSources`
+- **Collision-free TV channel identifiers** — TV tuner channels use `TV_IDENTIFIER_BASE = 1000` to avoid collisions with HDMI / App identifiers
+- **Improved application title matching** — fuzzy normalisation strips punctuation, treats `+` as `plus`, prevents duplicates
+- **Verbose structured log prefixes** for easier troubleshooting
+- **Web server API endpoints**: `/api/channels`, `/api/pairing-status`, `/api/pin`, `/api/selection`, `/api/save-selection`, `/api/rescan`
+- Replaced hand-rolled `uuidv4()` with the standard `uuid` npm package
 
 ---
 
