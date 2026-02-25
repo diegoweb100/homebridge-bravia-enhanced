@@ -1,9 +1,12 @@
 # homebridge-bravia-enhanced
 
 [![npm](https://img.shields.io/npm/v/homebridge-bravia-enhanced)](https://www.npmjs.com/package/homebridge-bravia-enhanced)
+[![downloads](https://img.shields.io/npm/dt/homebridge-bravia-enhanced)](https://www.npmjs.com/package/homebridge-bravia-enhanced)
+[![license](https://img.shields.io/npm/l/homebridge-bravia-enhanced)](LICENSE)
+[![homebridge verified](https://badgen.net/badge/homebridge/verified/purple)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
 
 > **Enhanced fork** of [homebridge-bravia](https://github.com/normen/homebridge-bravia) by Normen Hansen.  
-> Maintained by [diegoweb100](https://github.com/diegoweb100) — version 1.0.0
+> Maintained by [diegoweb100](https://github.com/diegoweb100)
 
 HomeBridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others).
 
@@ -17,6 +20,7 @@ HomeBridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **HomeKit 98-input limit** — automatically enforced (100 services − TV − Speaker = 98 max inputs), configurable via `maxInputSources`
 - **Improved app title matching** — fuzzy normalisation prevents duplicates and handles `+`/`plus` variants
 - **New pairing page** — clean PIN entry UI with live pairing status
+- **HDMI input status polling** — auto-detects connected/disconnected HDMI inputs with automatic API version fallback (v1.1 → v1.0)
 - **Verbose structured logging** — easier troubleshooting with prefixed log lines
 
 ---
@@ -24,7 +28,7 @@ HomeBridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 ## Supported functions
 
 - Turning TV on/off
-- Setting volume
+- Setting volume / mute
 - Selecting inputs / channels
 - Starting apps
 - Trigger automation when turning the TV on/off
@@ -119,6 +123,7 @@ If you use `externalaccessory: true`, after Homebridge restart:
 | `enableChannelSelector` | `true` | Set to `false` to disable the web UI |
 | `maxInputSources` | `98` | Max inputs to register in HomeKit (hard cap: 98) |
 | `externalaccessory` | `false` | Publish TV as external accessory (needed for multiple TVs in Remote app) |
+| `hideDisconnectedInputs` | `false` | Automatically hide HDMI inputs that are physically disconnected |
 | `mac` | — | MAC address for Wake-on-LAN (only set if needed) |
 | `woladdress` | `255.255.255.255` | Subnet broadcast address for WOL |
 | `updaterate` | `5000` | Interval (ms) for TV power status polling |
