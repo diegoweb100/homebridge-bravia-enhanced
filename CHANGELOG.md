@@ -6,6 +6,13 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.0.7] - 2026-02-25
+
+### Added
+- Debug logging for all volume/mute functions: `getMuted`, `setMuted`, `getVolume`, `setVolume`, `setVolumeSelector` now log entry, result, and errors when `debug: true` is set in config
+
+---
+
 ## [1.0.6] - 2026-02-25
 
 ### Fixed

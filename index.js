@@ -1146,12 +1146,15 @@ class SonyTV {
   setVolumeSelector(key, callback) {
     const that = this;
     var value = '';
+    var direction = key === Characteristic.VolumeSelector.INCREMENT ? 'UP' : 'DOWN';
+    if (that.debug) that.log('[' + that.name + '] setVolumeSelector: ' + direction);
     var onError = function (err) {
-      if (that.debug) that.log(err);
+      if (that.debug) that.log('[' + that.name + '] ERROR setVolumeSelector: ' + err);
       if (!isNull(callback))
         callback(null);
     };
     var onSucces = function (data) {
+      if (that.debug) that.log('[' + that.name + '] setVolumeSelector ' + direction + ' OK');
       if (!isNull(callback))
         callback(null);
     };
@@ -1227,22 +1230,22 @@ class SonyTV {
   // homebridge callback to get muted state
   getMuted(callback) {
     var that = this;
+    if (that.debug) that.log('[' + that.name + '] getMuted called');
     if (!that.power) {
+      if (that.debug) that.log('[' + that.name + '] getMuted: TV is OFF, returning false');
       if (!isNull(callback))
         callback(null, 0);
       return;
     }
     var post_data = '{"id":4,"method":"getVolumeInformation","version":"1.0","params":[]}';
     var onError = function (err) {
-      if (that.debug)
-        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
+      if (that.debug) that.log('[' + that.name + '] ERROR getMuted: ' + err);
       if (!isNull(callback))
         callback(null, false);
     };
     var onSucces = function (chunk) {
       if (chunk.indexOf('"error"') >= 0) {
-        if (that.debug)
-          that.log('[' + that.name + '] ERROR response: ' + chunk);
+        if (that.debug) that.log('[' + that.name + '] getMuted ERROR response: ' + chunk);
         if (!isNull(callback))
           callback(null, false);
         return;
@@ -1264,6 +1267,7 @@ class SonyTV {
         var volume = _json.result[0][i].volume;
         var typ = _json.result[0][i].target;
         if (typ === that.soundoutput) {
+          if (that.debug) that.log('[' + that.name + '] getMuted: ' + (that.soundoutput) + ' mute=' + _json.result[0][i].mute + ' volume=' + volume);
           if (!isNull(callback))
             callback(null, _json.result[0][i].mute);
           return;
@@ -1277,7 +1281,9 @@ class SonyTV {
   // homebridge callback to set muted state
   setMuted(muted, callback) {
     var that = this;
+    if (that.debug) that.log('[' + that.name + '] setMuted called: ' + muted);
     if (!that.power) {
+      if (that.debug) that.log('[' + that.name + '] setMuted: TV is OFF, skipping');
       if (!isNull(callback))
         callback(null);
       return;
@@ -1285,15 +1291,15 @@ class SonyTV {
     var merterd = muted ? 'true' : 'false';
     var post_data = '{"id":13,"method":"setAudioMute","version":"1.0","params":[{"status":' + merterd + '}]}';
     var onError = function (err) {
-      if (that.debug)
-        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
+      if (that.debug) that.log('[' + that.name + '] ERROR setMuted: ' + err);
       if (!isNull(callback))
         callback(null);
     };
     var onSucces = function (chunk) {
       if (chunk.indexOf('"error"') >= 0) {
-        if (that.debug)
-          that.log('[' + that.name + '] ERROR response: ' + chunk);
+        if (that.debug) that.log('[' + that.name + '] setMuted ERROR response: ' + chunk);
+      } else {
+        if (that.debug) that.log('[' + that.name + '] setMuted OK: mute=' + muted);
       }
       if (!isNull(callback))
         callback(null);
@@ -1303,22 +1309,22 @@ class SonyTV {
   // homebridge callback to get absoluet volume
   getVolume(callback) {
     var that = this;
+    if (that.debug) that.log('[' + that.name + '] getVolume called');
     if (!that.power) {
+      if (that.debug) that.log('[' + that.name + '] getVolume: TV is OFF, returning 0');
       if (!isNull(callback))
         callback(null, 0);
       return;
     }
     var post_data = '{"id":4,"method":"getVolumeInformation","version":"1.0","params":[]}';
     var onError = function (err) {
-      if (that.debug)
-        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
+      if (that.debug) that.log('[' + that.name + '] ERROR getVolume: ' + err);
       if (!isNull(callback))
         callback(null, 0);
     };
     var onSucces = function (chunk) {
       if (chunk.indexOf('"error"') >= 0) {
-        if (that.debug)
-          that.log('[' + that.name + '] ERROR response: ' + chunk);
+        if (that.debug) that.log('[' + that.name + '] getVolume ERROR response: ' + chunk);
         if (!isNull(callback))
           callback(null, 0);
         return;
@@ -1340,6 +1346,7 @@ class SonyTV {
         var volume = _json.result[0][i].volume;
         var typ = _json.result[0][i].target;
         if (typ === that.soundoutput) {
+          if (that.debug) that.log('[' + that.name + '] getVolume: ' + that.soundoutput + '=' + volume);
           if (!isNull(callback))
             callback(null, volume);
           return;
@@ -1353,19 +1360,25 @@ class SonyTV {
   // homebridge callback to set absolute volume
   setVolume(volume, callback) {
     var that = this;
+    if (that.debug) that.log('[' + that.name + '] setVolume called: ' + volume);
     if (!that.power) {
+      if (that.debug) that.log('[' + that.name + '] setVolume: TV is OFF, skipping');
       if (!isNull(callback))
         callback(null);
       return;
     }
     var post_data = '{"id":13,"method":"setAudioVolume","version":"1.0","params":[{"target":"' + that.soundoutput + '","volume":"' + volume + '"}]}';
     var onError = function (err) {
-      if (that.debug)
-        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
+      if (that.debug) that.log('[' + that.name + '] ERROR setVolume: ' + err);
       if (!isNull(callback))
         callback(null);
     };
     var onSucces = function (chunk) {
+      if (chunk.indexOf('"error"') >= 0) {
+        if (that.debug) that.log('[' + that.name + '] setVolume ERROR response: ' + chunk);
+      } else {
+        if (that.debug) that.log('[' + that.name + '] setVolume OK: ' + that.soundoutput + '=' + volume);
+      }
       if (!isNull(callback))
         callback(null);
     };
