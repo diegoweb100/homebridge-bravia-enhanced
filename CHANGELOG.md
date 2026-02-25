@@ -6,6 +6,14 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.0.6] - 2026-02-25
+
+### Fixed
+- `pollExternalInputsStatus`: now tries `getCurrentExternalInputsStatus` v1.1 first and automatically falls back to v1.0 on error 12 (Illegal Argument), fixing the continuous "External inputs status error response" log spam on older Bravia TVs that do not support v1.1
+
+---
+
+
 ## [1.0.5] - 2026-02-25
 
 ### Fixed

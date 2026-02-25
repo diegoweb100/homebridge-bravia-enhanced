@@ -160,6 +160,9 @@ class SonyTV {
     this.hideDisconnectedInputs = config.hideDisconnectedInputs === true;
     // Cache of external input connection status: Map<uri, {title, label, connection, icon}>
     this.externalInputsStatus = new Map();
+    // API version to use for getCurrentExternalInputsStatus: '1.1' preferred, falls back to '1.0'
+    this.hdmiApiVersion = '1.1';
+    this.hdmiApiVersionDetected = false;
 
     if (this.debug) this.log('[' + this.name + '] TV Source configured: ' + this.tvsource);
     if (this.debug) this.log('[' + this.name + '] Channel update rate: ' + this.channelupdaterate + 'ms');
@@ -985,20 +988,37 @@ class SonyTV {
     that.makeHttpRequest(onError, onSucces, '/sony/avContent/', post_data, false);
   }
   // TV HTTP call to get the connection status of external (HDMI/component) inputs
-  // Uses getCurrentExternalInputsStatus v1.1 which includes the 'connection' field
+  // Tries v1.1 first (preferred), falls back to v1.0 automatically on error 12
   pollExternalInputsStatus() {
     const that = this;
     if (!that.power) return; // no point polling when TV is off
 
-    var post_data = '{"id":13,"method":"getCurrentExternalInputsStatus","version":"1.1","params":[]}';
+    var version = that.hdmiApiVersion;
+    var post_data = '{"id":13,"method":"getCurrentExternalInputsStatus","version":"' + version + '","params":[]}';
+
     var onError = function (err) {
       if (that.debug) that.log('[' + that.name + '] ERROR polling external inputs: ' + err);
     };
+
     var onSucces = function (data) {
       try {
         if (data.indexOf('"error"') >= 0) {
+          var json = JSON.parse(data);
+          // Error 12 = Illegal Argument (version not supported) — fall back to v1.0 once
+          if (!that.hdmiApiVersionDetected && json && json.error && json.error[0] === 12 && version === '1.1') {
+            that.log('[' + that.name + '] getCurrentExternalInputsStatus v1.1 not supported, falling back to v1.0');
+            that.hdmiApiVersion = '1.0';
+            that.hdmiApiVersionDetected = true;
+            that.pollExternalInputsStatus(); // retry immediately with v1.0
+            return;
+          }
           if (that.debug) that.log('[' + that.name + '] External inputs status error response');
           return;
+        }
+        // Mark version as detected so we stop retrying
+        if (!that.hdmiApiVersionDetected) {
+          that.hdmiApiVersionDetected = true;
+          if (that.debug) that.log('[' + that.name + '] getCurrentExternalInputsStatus using v' + version);
         }
         var json = JSON.parse(data);
         if (!json || !json.result || !json.result[0]) return;
@@ -1022,7 +1042,7 @@ class SonyTV {
 
           // If connection state changed, log it
           if (wasConnected !== isConnected) {
-            that.log('[' + that.name + '] Input ' + (input.label || input.title || uri) + ': ' + (isConnected ? '🟢 connected' : '⚫ disconnected'));
+            that.log('[' + that.name + '] Input ' + (input.label || input.title || uri) + ': ' + (isConnected ? '\U0001f7e2 connected' : '\u26ab disconnected'));
             changed = true;
           }
 
