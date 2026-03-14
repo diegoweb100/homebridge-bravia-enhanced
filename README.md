@@ -4,6 +4,7 @@
 [![downloads](https://img.shields.io/npm/dt/homebridge-bravia-enhanced)](https://www.npmjs.com/package/homebridge-bravia-enhanced)
 [![license](https://img.shields.io/npm/l/homebridge-bravia-enhanced)](LICENSE)
 [![homebridge verified](https://badgen.net/badge/homebridge/verified/purple)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+[![PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/diegoweb100)
 
 > **Enhanced fork** of [homebridge-bravia](https://github.com/normen/homebridge-bravia) by Normen Hansen.  
 > Maintained by [diegoweb100](https://github.com/diegoweb100)

@@ -160,9 +160,6 @@ class SonyTV {
     this.hideDisconnectedInputs = config.hideDisconnectedInputs === true;
     // Cache of external input connection status: Map<uri, {title, label, connection, icon}>
     this.externalInputsStatus = new Map();
-    // API version to use for getCurrentExternalInputsStatus: '1.1' preferred, falls back to '1.0'
-    this.hdmiApiVersion = '1.1';
-    this.hdmiApiVersionDetected = false;
 
     if (this.debug) this.log('[' + this.name + '] TV Source configured: ' + this.tvsource);
     if (this.debug) this.log('[' + this.name + '] Channel update rate: ' + this.channelupdaterate + 'ms');
@@ -404,23 +401,40 @@ class SonyTV {
           self.log('[' + self.name + '] Auth error in response: ' + chunk);
       }
       if (chunk.indexOf('[]') < 0) {
-        self.log('[' + self.name + '] Pairing required');
-        // If the user removed pairing on the TV side, an old cookie may still exist on disk.
-        // In that case, clear it so the UI does not incorrectly report "Already paired".
+        // Distinguish between a genuine auth rejection and a transient error (network, TV in deep standby).
+        // Only delete the cookie if the TV explicitly returns an auth error (403/401 or known Sony error codes).
+        // A transient error will contain "error" but NOT a valid JSON auth rejection — we keep the cookie.
+        var isAuthRejection = false;
         try {
-          const hadCookie = (!!self.cookie && String(self.cookie).length > 0) || fs.existsSync(self.cookiepath);
-          if (hadCookie) {
-            self.cookie = null;
-            try { fs.unlinkSync(self.cookiepath); } catch (e) {}
-            self.log('[' + self.name + '] ⚠️  Stored cookie rejected by TV — pairing required again');
+          var authJson = JSON.parse(chunk);
+          // Sony returns {"error":[403,"..."]} or {"error":[401,"..."]} for explicit auth rejection
+          if (authJson && authJson.error && Array.isArray(authJson.error)) {
+            var errCode = authJson.error[0];
+            if (errCode === 403 || errCode === 401 || errCode === 14) {
+              isAuthRejection = true;
+            }
           }
-        } catch (e) {}
+        } catch (e) { /* not valid JSON = transient/network error, keep cookie */ }
 
-        self.log('Please enter the PIN that appears on your TV at http://' + os.hostname() + ':' + self.serverPort);
-        self.awaitingPin = true;
-        // Reuse the permanent web server (Channel Selector) for PIN entry.
-        self.log('[' + self.name + '] 🔑 Pairing: http://' + os.hostname() + ':' + self.serverPort + '/pair?tv=' + encodeURIComponent(self.name));
-        self.log('[' + self.name + '] 📺 Channels: http://' + os.hostname() + ':' + self.serverPort + '/  (available after pairing)');
+        if (isAuthRejection) {
+          self.log('[' + self.name + '] Pairing required');
+          // TV explicitly rejected the cookie — safe to delete it
+          try {
+            const hadCookie = (!!self.cookie && String(self.cookie).length > 0) || fs.existsSync(self.cookiepath);
+            if (hadCookie) {
+              self.cookie = null;
+              try { fs.unlinkSync(self.cookiepath); } catch (e) {}
+              self.log('[' + self.name + '] ⚠️  Stored cookie rejected by TV — pairing required again');
+            }
+          } catch (e) {}
+          self.awaitingPin = true;
+          self.log('Please enter the PIN that appears on your TV at http://' + os.hostname() + ':' + self.serverPort);
+          self.log('[' + self.name + '] 🔑 Pairing: http://' + os.hostname() + ':' + self.serverPort + '/pair?tv=' + encodeURIComponent(self.name));
+          self.log('[' + self.name + '] 📺 Channels: http://' + os.hostname() + ':' + self.serverPort + '/  (available after pairing)');
+        } else {
+          // Transient error (network, TV in deep standby) — keep the cookie and retry silently
+          if (self.debug) self.log('[' + self.name + '] Auth check failed (transient) — keeping cookie, will retry');
+        }
       } else {
         self.log('[' + self.name + '] ✓ Paired successfully');
         self.authok = true;
@@ -988,37 +1002,20 @@ class SonyTV {
     that.makeHttpRequest(onError, onSucces, '/sony/avContent/', post_data, false);
   }
   // TV HTTP call to get the connection status of external (HDMI/component) inputs
-  // Tries v1.1 first (preferred), falls back to v1.0 automatically on error 12
+  // Uses getCurrentExternalInputsStatus v1.1 which includes the 'connection' field
   pollExternalInputsStatus() {
     const that = this;
     if (!that.power) return; // no point polling when TV is off
 
-    var version = that.hdmiApiVersion;
-    var post_data = '{"id":13,"method":"getCurrentExternalInputsStatus","version":"' + version + '","params":[]}';
-
+    var post_data = '{"id":13,"method":"getCurrentExternalInputsStatus","version":"1.1","params":[]}';
     var onError = function (err) {
       if (that.debug) that.log('[' + that.name + '] ERROR polling external inputs: ' + err);
     };
-
     var onSucces = function (data) {
       try {
         if (data.indexOf('"error"') >= 0) {
-          var json = JSON.parse(data);
-          // Error 12 = Illegal Argument (version not supported) — fall back to v1.0 once
-          if (!that.hdmiApiVersionDetected && json && json.error && json.error[0] === 12 && version === '1.1') {
-            that.log('[' + that.name + '] getCurrentExternalInputsStatus v1.1 not supported, falling back to v1.0');
-            that.hdmiApiVersion = '1.0';
-            that.hdmiApiVersionDetected = true;
-            that.pollExternalInputsStatus(); // retry immediately with v1.0
-            return;
-          }
           if (that.debug) that.log('[' + that.name + '] External inputs status error response');
           return;
-        }
-        // Mark version as detected so we stop retrying
-        if (!that.hdmiApiVersionDetected) {
-          that.hdmiApiVersionDetected = true;
-          if (that.debug) that.log('[' + that.name + '] getCurrentExternalInputsStatus using v' + version);
         }
         var json = JSON.parse(data);
         if (!json || !json.result || !json.result[0]) return;
@@ -1042,7 +1039,7 @@ class SonyTV {
 
           // If connection state changed, log it
           if (wasConnected !== isConnected) {
-            that.log('[' + that.name + '] Input ' + (input.label || input.title || uri) + ': ' + (isConnected ? '\U0001f7e2 connected' : '\u26ab disconnected'));
+            that.log('[' + that.name + '] Input ' + (input.label || input.title || uri) + ': ' + (isConnected ? '🟢 connected' : '⚫ disconnected'));
             changed = true;
           }
 
@@ -1146,15 +1143,12 @@ class SonyTV {
   setVolumeSelector(key, callback) {
     const that = this;
     var value = '';
-    var direction = key === Characteristic.VolumeSelector.INCREMENT ? 'UP' : 'DOWN';
-    if (that.debug) that.log('[' + that.name + '] setVolumeSelector: ' + direction);
     var onError = function (err) {
-      if (that.debug) that.log('[' + that.name + '] ERROR setVolumeSelector: ' + err);
+      if (that.debug) that.log(err);
       if (!isNull(callback))
         callback(null);
     };
     var onSucces = function (data) {
-      if (that.debug) that.log('[' + that.name + '] setVolumeSelector ' + direction + ' OK');
       if (!isNull(callback))
         callback(null);
     };
@@ -1230,22 +1224,22 @@ class SonyTV {
   // homebridge callback to get muted state
   getMuted(callback) {
     var that = this;
-    if (that.debug) that.log('[' + that.name + '] getMuted called');
     if (!that.power) {
-      if (that.debug) that.log('[' + that.name + '] getMuted: TV is OFF, returning false');
       if (!isNull(callback))
         callback(null, 0);
       return;
     }
     var post_data = '{"id":4,"method":"getVolumeInformation","version":"1.0","params":[]}';
     var onError = function (err) {
-      if (that.debug) that.log('[' + that.name + '] ERROR getMuted: ' + err);
+      if (that.debug)
+        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
       if (!isNull(callback))
         callback(null, false);
     };
     var onSucces = function (chunk) {
       if (chunk.indexOf('"error"') >= 0) {
-        if (that.debug) that.log('[' + that.name + '] getMuted ERROR response: ' + chunk);
+        if (that.debug)
+          that.log('[' + that.name + '] ERROR response: ' + chunk);
         if (!isNull(callback))
           callback(null, false);
         return;
@@ -1267,7 +1261,6 @@ class SonyTV {
         var volume = _json.result[0][i].volume;
         var typ = _json.result[0][i].target;
         if (typ === that.soundoutput) {
-          if (that.debug) that.log('[' + that.name + '] getMuted: ' + (that.soundoutput) + ' mute=' + _json.result[0][i].mute + ' volume=' + volume);
           if (!isNull(callback))
             callback(null, _json.result[0][i].mute);
           return;
@@ -1281,9 +1274,7 @@ class SonyTV {
   // homebridge callback to set muted state
   setMuted(muted, callback) {
     var that = this;
-    if (that.debug) that.log('[' + that.name + '] setMuted called: ' + muted);
     if (!that.power) {
-      if (that.debug) that.log('[' + that.name + '] setMuted: TV is OFF, skipping');
       if (!isNull(callback))
         callback(null);
       return;
@@ -1291,15 +1282,15 @@ class SonyTV {
     var merterd = muted ? 'true' : 'false';
     var post_data = '{"id":13,"method":"setAudioMute","version":"1.0","params":[{"status":' + merterd + '}]}';
     var onError = function (err) {
-      if (that.debug) that.log('[' + that.name + '] ERROR setMuted: ' + err);
+      if (that.debug)
+        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
       if (!isNull(callback))
         callback(null);
     };
     var onSucces = function (chunk) {
       if (chunk.indexOf('"error"') >= 0) {
-        if (that.debug) that.log('[' + that.name + '] setMuted ERROR response: ' + chunk);
-      } else {
-        if (that.debug) that.log('[' + that.name + '] setMuted OK: mute=' + muted);
+        if (that.debug)
+          that.log('[' + that.name + '] ERROR response: ' + chunk);
       }
       if (!isNull(callback))
         callback(null);
@@ -1309,22 +1300,22 @@ class SonyTV {
   // homebridge callback to get absoluet volume
   getVolume(callback) {
     var that = this;
-    if (that.debug) that.log('[' + that.name + '] getVolume called');
     if (!that.power) {
-      if (that.debug) that.log('[' + that.name + '] getVolume: TV is OFF, returning 0');
       if (!isNull(callback))
         callback(null, 0);
       return;
     }
     var post_data = '{"id":4,"method":"getVolumeInformation","version":"1.0","params":[]}';
     var onError = function (err) {
-      if (that.debug) that.log('[' + that.name + '] ERROR getVolume: ' + err);
+      if (that.debug)
+        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
       if (!isNull(callback))
         callback(null, 0);
     };
     var onSucces = function (chunk) {
       if (chunk.indexOf('"error"') >= 0) {
-        if (that.debug) that.log('[' + that.name + '] getVolume ERROR response: ' + chunk);
+        if (that.debug)
+          that.log('[' + that.name + '] ERROR response: ' + chunk);
         if (!isNull(callback))
           callback(null, 0);
         return;
@@ -1346,7 +1337,6 @@ class SonyTV {
         var volume = _json.result[0][i].volume;
         var typ = _json.result[0][i].target;
         if (typ === that.soundoutput) {
-          if (that.debug) that.log('[' + that.name + '] getVolume: ' + that.soundoutput + '=' + volume);
           if (!isNull(callback))
             callback(null, volume);
           return;
@@ -1360,25 +1350,19 @@ class SonyTV {
   // homebridge callback to set absolute volume
   setVolume(volume, callback) {
     var that = this;
-    if (that.debug) that.log('[' + that.name + '] setVolume called: ' + volume);
     if (!that.power) {
-      if (that.debug) that.log('[' + that.name + '] setVolume: TV is OFF, skipping');
       if (!isNull(callback))
         callback(null);
       return;
     }
     var post_data = '{"id":13,"method":"setAudioVolume","version":"1.0","params":[{"target":"' + that.soundoutput + '","volume":"' + volume + '"}]}';
     var onError = function (err) {
-      if (that.debug) that.log('[' + that.name + '] ERROR setVolume: ' + err);
+      if (that.debug)
+        if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
       if (!isNull(callback))
         callback(null);
     };
     var onSucces = function (chunk) {
-      if (chunk.indexOf('"error"') >= 0) {
-        if (that.debug) that.log('[' + that.name + '] setVolume ERROR response: ' + chunk);
-      } else {
-        if (that.debug) that.log('[' + that.name + '] setVolume OK: ' + that.soundoutput + '=' + volume);
-      }
       if (!isNull(callback))
         callback(null);
     };
@@ -1706,6 +1690,28 @@ const pinRequired = !paired;
         return;
       }
       
+      if (pathname === '/api/delete-cookie' && req.method === 'POST') {
+        const tv = urlObject.query.tv;
+        if (isNull(tv) || tv !== self.name) {
+          res.writeHead(400, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: 'Missing or invalid tv parameter' }));
+          return;
+        }
+        try {
+          self.cookie = null;
+          self.authok = false;
+          self.awaitingPin = true;
+          try { fs.unlinkSync(self.cookiepath); } catch (e) {}
+          self.log('[' + self.name + '] 🗑️  Cookie deleted manually via UI — pairing required');
+          res.writeHead(200, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: true }));
+        } catch (e) {
+          res.writeHead(500, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: String(e) }));
+        }
+        return;
+      }
+
       if (pathname === '/api/tvs') {
         self.apiGetTVs(req, res);
       } else if (pathname === '/api/scan') {

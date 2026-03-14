@@ -6,6 +6,17 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.0.8] - 2026-03-14
+
+### Fixed
+- `checkRegistration`: cookie is no longer deleted automatically on transient errors (network issues, TV in deep standby). Cookie is now deleted only when the TV explicitly returns an authentication rejection (error 403, 401 or 14). This prevents unnecessary re-pairing after network hiccups or reboots
+
+### Added
+- New API endpoint `POST /api/delete-cookie?tv=<name>` to delete the stored cookie programmatically
+- Pairing UI: when already paired, a **"Delete cookie & force re-pairing"** button is shown with confirmation dialog, allowing manual re-pairing without touching the filesystem
+
+---
+
 ## [1.0.7] - 2026-02-25
 
 ### Added
