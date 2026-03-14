@@ -6,6 +6,24 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.2.0] - 2026-03-14
+
+### Added
+- **Capabilities module** — new modular system to detect and persist device info and supported API versions per TV
+  - `probeInterfaceInfo()`: calls `getInterfaceInformation` (no auth required) at every boot to get model name and interface version
+  - `probeSystemInfo()`: calls `getSystemInformation` after successful pairing to get serial number and firmware generation
+  - `probeApiVersions()`: probes optional API versions (e.g. `setAudioVolume` v1.2) after auth — each probe is independent and non-blocking
+  - `loadCapabilities()` / `saveCapabilities()`: persists detected info to `sonytv-capabilities-<name>.json`
+  - `getApiVersion(method)`: returns the best supported version for a given API method
+  - `getDeviceInfo()`: exposes device info to the web UI
+- New API endpoint `GET /api/device-info?tv=<name>`: returns device model, serial, firmware, interface version and detected API versions
+- **Pairing UI**: new **Device Info** panel always visible (independent of pairing state) showing model, serial, firmware, interface version and detected API versions. Serial and firmware shown as "Available after pairing" until auth succeeds
+
+### Changed
+- `checkRegistration`: on successful pairing, now calls `probeSystemInfo()` to populate device info immediately after auth
+
+---
+
 ## [1.1.1] - 2026-03-14
 
 ### Fixed

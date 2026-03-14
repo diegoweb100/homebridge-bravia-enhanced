@@ -363,6 +363,21 @@
       <div class="unsaved-indicator" id="pair-status">Checking status…</div>
     </div>
 
+    <div class="controls" id="device-info-card" style="margin-top:16px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+        <h2 style="margin:0; font-size:16px;">📺 Device Info</h2>
+        <span id="device-info-status" class="unsaved-indicator" style="font-size:11px;">Loading…</span>
+      </div>
+      <div id="device-info-grid" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
+        <div class="stat-card"><div class="stat-label">Model</div><div class="stat-value" id="di-model" style="font-size:14px;">—</div></div>
+        <div class="stat-card"><div class="stat-label">Serial</div><div class="stat-value" id="di-serial" style="font-size:14px;">—</div></div>
+        <div class="stat-card"><div class="stat-label">Firmware / Generation</div><div class="stat-value" id="di-firmware" style="font-size:14px;">—</div></div>
+        <div class="stat-card"><div class="stat-label">Interface Version</div><div class="stat-value" id="di-interface" style="font-size:14px;">—</div></div>
+        <div class="stat-card" style="grid-column: span 2;"><div class="stat-label">Detected API Versions</div><div class="stat-value" id="di-apis" style="font-size:12px; font-family:monospace;">—</div></div>
+      </div>
+      <div style="margin-top:8px; font-size:11px; color:rgba(255,255,255,.35);" id="di-detected-at"></div>
+    </div>
+
     <div class="tv-selector">
       <label for="tv-name">TV</label>
       <input id="tv-name" type="text" readonly />

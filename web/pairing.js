@@ -63,6 +63,49 @@
     }
   }
 
+  async function loadDeviceInfo(){
+    try {
+      const r = await fetch(`/api/device-info?tv=${encodeURIComponent(tv)}`);
+      const data = await r.json();
+      if (!data.success || !data.data) return;
+      const d = data.data;
+      const statusEl = document.getElementById('device-info-status');
+      const modelEl = document.getElementById('di-model');
+      const serialEl = document.getElementById('di-serial');
+      const firmwareEl = document.getElementById('di-firmware');
+      const interfaceEl = document.getElementById('di-interface');
+      const apisEl = document.getElementById('di-apis');
+      const detectedEl = document.getElementById('di-detected-at');
+
+      // Interface info (always available — no auth)
+      if (d.interface) {
+        modelEl.textContent = (d.interface.productName || '') + ' ' + (d.interface.modelName || '') || '—';
+        interfaceEl.textContent = d.interface.interfaceVersion || '—';
+      }
+      // System info (available after pairing)
+      if (d.system) {
+        if (d.system.model) modelEl.textContent = d.system.model;
+        serialEl.textContent = d.system.serial || '—';
+        firmwareEl.textContent = (d.system.generation || '—');
+      } else {
+        serialEl.textContent = 'Available after pairing';
+        firmwareEl.textContent = 'Available after pairing';
+      }
+      // API versions
+      if (d.apiVersions && Object.keys(d.apiVersions).length > 0) {
+        apisEl.textContent = Object.entries(d.apiVersions).map(([k,v]) => k + ': v' + v).join(' | ');
+      }
+      // Detected at
+      if (d.detectedAt) {
+        detectedEl.textContent = 'Last detected: ' + new Date(d.detectedAt).toLocaleString();
+      }
+      if (statusEl) statusEl.textContent = d.interface ? '✅ Info loaded' : '⏳ Partial';
+    } catch(e) {
+      const statusEl = document.getElementById('device-info-status');
+      if (statusEl) statusEl.textContent = 'Unavailable';
+    }
+  }
+
   async function submitPin(){
     const pin = (pinInput.value || '').trim();
     if (!pin){ showToast('warn','PIN missing','Enter the PIN shown on the TV'); return; }
@@ -114,4 +157,5 @@
   forceUnpairBtn.addEventListener('click', forceUnpair);
 
   refreshStatus();
+  loadDeviceInfo();
 })();

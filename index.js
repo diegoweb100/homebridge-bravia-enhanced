@@ -146,6 +146,17 @@ class SonyTV {
     this.volumeAccessory = config.volumeAccessory === true;
     this.volumeAccessoryInstance = null; // will hold the Lightbulb accessory if enabled
     this.fullScanCachePath = STORAGE_PATH + '/sonytv-fullscan-' + this.name + '.json';
+    this.capabilitiesPath = STORAGE_PATH + '/sonytv-capabilities-' + this.name + '.json';
+    // Device capabilities — loaded from file or detected at runtime
+    this.capabilities = {
+      detectedAt: null,
+      interface: null,   // from getInterfaceInformation (no auth)
+      system: null,      // from getSystemInformation (auth required)
+      apiVersions: {
+        setAudioVolume: '1.0',
+        getCurrentExternalInputsStatus: '1.1' // start optimistic, fallback handled separately
+      }
+    };
     
     // HomeKit has a hardcoded limit of 100 services per accessory
     // This includes: 1 TV service + 1 Speaker service + N Input Sources
@@ -281,6 +292,8 @@ class SonyTV {
     this.checkRegistration();
     this.updateStatus();
     this.setupVolumeAccessory();
+    this.loadCapabilities();
+    this.probeInterfaceInfo();
     if (this.debug) this.log('[' + this.name + '] Auth + status polling started');
   }
   // Get the services (TV service, channels) from a restored HomeKit accessory
@@ -371,6 +384,138 @@ class SonyTV {
   }
   // Do TV status check every 5 seconds
   // Creates and publishes a Lightbulb accessory that maps brightness→volume and on/off→mute
+  // ══════════════════════════════════════════════════════════════════════════
+  // CAPABILITIES MODULE
+  // Detects and persists device info and supported API versions
+  // Each method is independent — failure of one does not affect others
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Load capabilities from disk (called at boot)
+  loadCapabilities() {
+    try {
+      if (fs.existsSync(this.capabilitiesPath)) {
+        const raw = fs.readFileSync(this.capabilitiesPath, 'utf8');
+        const saved = JSON.parse(raw);
+        this.capabilities = Object.assign(this.capabilities, saved);
+        if (this.debug) this.log('[' + this.name + '] ✓ Capabilities loaded from ' + this.capabilitiesPath);
+      }
+    } catch (e) {
+      if (this.debug) this.log('[' + this.name + '] Could not load capabilities: ' + e);
+    }
+  }
+
+  // Save capabilities to disk
+  saveCapabilities() {
+    try {
+      this.capabilities.detectedAt = new Date().toISOString();
+      fs.writeFileSync(this.capabilitiesPath, JSON.stringify(this.capabilities, null, 2));
+      if (this.debug) this.log('[' + this.name + '] ✓ Capabilities saved to ' + this.capabilitiesPath);
+    } catch (e) {
+      if (this.debug) this.log('[' + this.name + '] Could not save capabilities: ' + e);
+    }
+  }
+
+  // Probe getInterfaceInformation — authLevel: none, always available
+  probeInterfaceInfo() {
+    const that = this;
+    const post_data = '{"id":1,"method":"getInterfaceInformation","version":"1.0","params":[]}';
+    const onError = (err) => {
+      if (that.debug) that.log('[' + that.name + '] probeInterfaceInfo error: ' + err);
+    };
+    const onSuccess = (data) => {
+      try {
+        if (data.indexOf('"error"') >= 0) return;
+        const json = JSON.parse(data);
+        if (!json || !json.result || !json.result[0]) return;
+        const info = json.result[0];
+        that.capabilities.interface = {
+          modelName: info.modelName || '',
+          productName: info.productName || '',
+          interfaceVersion: info.interfaceVersion || ''
+        };
+        that.log('[' + that.name + '] 📺 Device: ' + (info.productName || '') + ' ' + (info.modelName || '') + ' (interface v' + (info.interfaceVersion || '?') + ')');
+        that.saveCapabilities();
+      } catch (e) {
+        if (that.debug) that.log('[' + that.name + '] probeInterfaceInfo parse error: ' + e);
+      }
+    };
+    that.makeHttpRequest(onError, onSuccess, '/sony/system/', post_data, false);
+  }
+
+  // Probe getSystemInformation — authLevel: private, requires cookie
+  probeSystemInfo() {
+    const that = this;
+    const post_data = '{"id":1,"method":"getSystemInformation","version":"1.0","params":[]}';
+    const onError = (err) => {
+      if (that.debug) that.log('[' + that.name + '] probeSystemInfo error: ' + err);
+    };
+    const onSuccess = (data) => {
+      try {
+        if (data.indexOf('"error"') >= 0) return;
+        const json = JSON.parse(data);
+        if (!json || !json.result || !json.result[0]) return;
+        const info = json.result[0];
+        that.capabilities.system = {
+          model: info.model || '',
+          serial: info.serial || '',
+          generation: info.generation || '',
+          language: info.language || '',
+          macAddr: info.macAddr || ''
+        };
+        that.log('[' + that.name + '] 🔍 System info: model=' + (info.model || '?') + ' serial=' + (info.serial || '?') + ' gen=' + (info.generation || '?'));
+        that.saveCapabilities();
+        // After system info, probe optional API versions
+        that.probeApiVersions();
+      } catch (e) {
+        if (that.debug) that.log('[' + that.name + '] probeSystemInfo parse error: ' + e);
+      }
+    };
+    that.makeHttpRequest(onError, onSuccess, '/sony/system/', post_data, false);
+  }
+
+  // Probe optional API versions — called after successful auth
+  // Each probe is independent and non-blocking
+  probeApiVersions() {
+    const that = this;
+    // Probe setAudioVolume v1.2 (ui parameter support)
+    const post_v12 = '{"id":1,"method":"setAudioVolume","version":"1.2","params":[{"target":"' + that.soundoutput + '","volume":"' + (that.capabilities.lastKnownVolume || '10') + '","ui":"off"}]}';
+    const onError = () => {};
+    const onSuccess = (data) => {
+      try {
+        const json = JSON.parse(data);
+        if (json && json.error && json.error[0] === 14) {
+          that.capabilities.apiVersions.setAudioVolume = '1.0';
+          if (that.debug) that.log('[' + that.name + '] setAudioVolume: v1.2 not supported, using v1.0');
+        } else if (!json.error) {
+          that.capabilities.apiVersions.setAudioVolume = '1.2';
+          that.log('[' + that.name + '] setAudioVolume: v1.2 supported (UI feedback available)');
+        }
+        that.saveCapabilities();
+      } catch (e) {}
+    };
+    that.makeHttpRequest(onError, onSuccess, '/sony/audio/', post_v12, false);
+  }
+
+  // Get the best API version for a given method
+  getApiVersion(methodName, defaultVersion) {
+    if (this.capabilities && this.capabilities.apiVersions && this.capabilities.apiVersions[methodName]) {
+      return this.capabilities.apiVersions[methodName];
+    }
+    return defaultVersion || '1.0';
+  }
+
+  // Return device info as a plain object for the web UI
+  getDeviceInfo() {
+    return {
+      name: this.name,
+      ip: this.ip,
+      interface: this.capabilities.interface || null,
+      system: this.capabilities.system || null,
+      apiVersions: this.capabilities.apiVersions || {},
+      detectedAt: this.capabilities.detectedAt || null
+    };
+  }
+
   setupVolumeAccessory() {
     const that = this;
     if (!that.volumeAccessory) return;
@@ -464,6 +609,7 @@ class SonyTV {
         self.awaitingPin = false;
         self.log('[' + self.name + '] ✅ Channel Selector: http://' + os.hostname() + ':' + self.serverPort + '/');
         if (self.debug) self.log('[' + self.name + '] Starting channel scan');
+        self.probeSystemInfo(); // detect device info and API versions after auth
         self.receiveSources(true);
       }
     };
@@ -1729,7 +1875,19 @@ const pinRequired = !paired;
         self.handlePinEntry(urlObject.query.pin, res);
         return;
       }
-      
+
+      if (pathname === '/api/device-info') {
+        const tv = urlObject.query.tv;
+        if (isNull(tv) || tv !== self.name) {
+          res.writeHead(400, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: 'Missing or invalid tv parameter' }));
+          return;
+        }
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({ success: true, data: self.getDeviceInfo() }));
+        return;
+      }
+
       if (pathname === '/api/tvs') {
         self.apiGetTVs(req, res);
       } else if (pathname === '/api/scan') {
