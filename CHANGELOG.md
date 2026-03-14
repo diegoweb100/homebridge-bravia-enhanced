@@ -6,6 +6,13 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.1.1] - 2026-03-14
+
+### Fixed
+- `config.schema.json`: `volumeAccessory` option was missing from the Homebridge UI form — it was present in the schema properties but not listed in the form section
+
+---
+
 ## [1.1.0] - 2026-03-14
 
 ### Added

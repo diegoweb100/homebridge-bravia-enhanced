@@ -147,6 +147,7 @@
         "tvs[].enableChannelSelector",
         "tvs[].maxInputSources",
         "tvs[].externalaccessory",
+        "tvs[].volumeAccessory",
         "tvs[].debug",
         {
           "key": "tvs[].applications",
