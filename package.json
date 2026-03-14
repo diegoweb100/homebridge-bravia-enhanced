@@ -1,7 +1,7 @@
 {
   "name": "homebridge-bravia-enhanced",
-  "version": "1.0.9",
-  "description": "Enhanced Homebridge plugin for Sony Bravia TVs — channel selector UI, per-TV debug, full-scan cache, app title matching and more",
+  "version": "1.1.0",
+  "description": "Enhanced Homebridge plugin for Sony Bravia TVs \u2014 channel selector UI, per-TV debug, full-scan cache, app title matching and more",
   "main": "index.js",
   "scripts": {
     "test": "./node_modules/homebridge/bin/homebridge -P ./ -I -U ./.homebridge"

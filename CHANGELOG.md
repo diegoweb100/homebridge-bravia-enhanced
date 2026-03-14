@@ -6,6 +6,18 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.1.0] - 2026-03-14
+
+### Added
+- `volumeAccessory` config option (default `false`): when enabled, publishes a separate **Lightbulb** accessory named `<TV Name> Volume` in HomeKit
+  - **Brightness slider** (0–100) controls TV volume
+  - **On/Off toggle** controls mute/unmute
+  - Fully coexists with the existing Remote app volume control
+  - Volume accessory state is automatically synced when the TV turns on/off
+  - Zero impact on existing installations when not enabled
+
+---
+
 ## [1.0.9] - 2026-03-14
 
 ### Fixed

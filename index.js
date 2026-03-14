@@ -143,6 +143,8 @@ class SonyTV {
     this.channelSelectorPort = config.channelSelectorPort || this.serverPort;
     this.enableChannelSelector = config.enableChannelSelector !== false;
     this.selectedChannelsPath = STORAGE_PATH + '/selected-channels-' + this.name + '.json';
+    this.volumeAccessory = config.volumeAccessory === true;
+    this.volumeAccessoryInstance = null; // will hold the Lightbulb accessory if enabled
     this.fullScanCachePath = STORAGE_PATH + '/sonytv-fullscan-' + this.name + '.json';
     
     // HomeKit has a hardcoded limit of 100 services per accessory
@@ -278,6 +280,7 @@ class SonyTV {
     
     this.checkRegistration();
     this.updateStatus();
+    this.setupVolumeAccessory();
     if (this.debug) this.log('[' + this.name + '] Auth + status polling started');
   }
   // Get the services (TV service, channels) from a restored HomeKit accessory
@@ -367,6 +370,43 @@ class SonyTV {
       .on('set', this.setVolume.bind(this));
   }
   // Do TV status check every 5 seconds
+  // Creates and publishes a Lightbulb accessory that maps brightness→volume and on/off→mute
+  setupVolumeAccessory() {
+    const that = this;
+    if (!that.volumeAccessory) return;
+
+    const volName = that.name + ' Volume';
+    const uuid = UUIDGen.generate(that.name + '-SonyTV-Volume');
+    const acc = new Accessory(volName, uuid, that.platform.api.hap.Categories.LIGHTBULB);
+
+    const bulb = new Service.Lightbulb(volName);
+
+    // On/Off → mute/unmute
+    bulb.getCharacteristic(Characteristic.On)
+      .on('get', (callback) => {
+        that.getMuted((err, muted) => {
+          callback(null, !muted); // On=true means NOT muted
+        });
+      })
+      .on('set', (value, callback) => {
+        that.setMuted(!value, callback); // On=true means unmute
+      });
+
+    // Brightness 0-100 → volume 0-100
+    bulb.getCharacteristic(Characteristic.Brightness)
+      .on('get', (callback) => {
+        that.getVolume(callback);
+      })
+      .on('set', (value, callback) => {
+        that.setVolume(value, callback);
+      });
+
+    acc.addService(bulb);
+    that.volumeAccessoryInstance = acc;
+    that.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [acc]);
+    that.log('[' + that.name + '] 🔊 Volume accessory published: ' + volName);
+  }
+
   updateStatus() {
     var that = this;
     if (this.debug) this.log('[' + this.name + '] Polling status, next in ' + this.updaterate + 'ms');
@@ -401,40 +441,23 @@ class SonyTV {
           self.log('[' + self.name + '] Auth error in response: ' + chunk);
       }
       if (chunk.indexOf('[]') < 0) {
-        // Distinguish between a genuine auth rejection and a transient error (network, TV in deep standby).
-        // Only delete the cookie if the TV explicitly returns an auth error (403/401 or known Sony error codes).
-        // A transient error will contain "error" but NOT a valid JSON auth rejection — we keep the cookie.
-        var isAuthRejection = false;
+        self.log('[' + self.name + '] Pairing required');
+        // If the user removed pairing on the TV side, an old cookie may still exist on disk.
+        // In that case, clear it so the UI does not incorrectly report "Already paired".
         try {
-          var authJson = JSON.parse(chunk);
-          // Sony returns {"error":[403,"..."]} or {"error":[401,"..."]} for explicit auth rejection
-          if (authJson && authJson.error && Array.isArray(authJson.error)) {
-            var errCode = authJson.error[0];
-            if (errCode === 403 || errCode === 401 || errCode === 14) {
-              isAuthRejection = true;
-            }
+          const hadCookie = (!!self.cookie && String(self.cookie).length > 0) || fs.existsSync(self.cookiepath);
+          if (hadCookie) {
+            self.cookie = null;
+            try { fs.unlinkSync(self.cookiepath); } catch (e) {}
+            self.log('[' + self.name + '] ⚠️  Stored cookie rejected by TV — pairing required again');
           }
-        } catch (e) { /* not valid JSON = transient/network error, keep cookie */ }
+        } catch (e) {}
 
-        if (isAuthRejection) {
-          self.log('[' + self.name + '] Pairing required');
-          // TV explicitly rejected the cookie — safe to delete it
-          try {
-            const hadCookie = (!!self.cookie && String(self.cookie).length > 0) || fs.existsSync(self.cookiepath);
-            if (hadCookie) {
-              self.cookie = null;
-              try { fs.unlinkSync(self.cookiepath); } catch (e) {}
-              self.log('[' + self.name + '] ⚠️  Stored cookie rejected by TV — pairing required again');
-            }
-          } catch (e) {}
-          self.awaitingPin = true;
-          self.log('Please enter the PIN that appears on your TV at http://' + os.hostname() + ':' + self.serverPort);
-          self.log('[' + self.name + '] 🔑 Pairing: http://' + os.hostname() + ':' + self.serverPort + '/pair?tv=' + encodeURIComponent(self.name));
-          self.log('[' + self.name + '] 📺 Channels: http://' + os.hostname() + ':' + self.serverPort + '/  (available after pairing)');
-        } else {
-          // Transient error (network, TV in deep standby) — keep the cookie and retry silently
-          if (self.debug) self.log('[' + self.name + '] Auth check failed (transient) — keeping cookie, will retry');
-        }
+        self.log('Please enter the PIN that appears on your TV at http://' + os.hostname() + ':' + self.serverPort);
+        self.awaitingPin = true;
+        // Reuse the permanent web server (Channel Selector) for PIN entry.
+        self.log('[' + self.name + '] 🔑 Pairing: http://' + os.hostname() + ':' + self.serverPort + '/pair?tv=' + encodeURIComponent(self.name));
+        self.log('[' + self.name + '] 📺 Channels: http://' + os.hostname() + ':' + self.serverPort + '/  (available after pairing)');
       } else {
         self.log('[' + self.name + '] ✓ Paired successfully');
         self.authok = true;
@@ -1454,6 +1477,23 @@ class SonyTV {
       this.log('[' + this.name + '] Power: ' + this.power + ' -> ' + state);
       this.power = state;
       this.tvService.getCharacteristic(Characteristic.Active).updateValue(this.power);
+      // Sync volume accessory on/off state with TV power
+      if (this.volumeAccessoryInstance) {
+        const bulb = this.volumeAccessoryInstance.getService(Service.Lightbulb);
+        if (bulb) {
+          if (!state) {
+            bulb.updateCharacteristic(Characteristic.On, false);
+          } else {
+            // TV turned on — refresh volume and mute state
+            this.getVolume((err, vol) => {
+              if (!err && vol !== null) bulb.updateCharacteristic(Characteristic.Brightness, vol);
+            });
+            this.getMuted((err, muted) => {
+              if (!err) bulb.updateCharacteristic(Characteristic.On, !muted);
+            });
+          }
+        }
+      }
     }
   }
   // Make HTTP request to TV
@@ -1690,28 +1730,6 @@ const pinRequired = !paired;
         return;
       }
       
-      if (pathname === '/api/delete-cookie' && req.method === 'POST') {
-        const tv = urlObject.query.tv;
-        if (isNull(tv) || tv !== self.name) {
-          res.writeHead(400, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ success: false, message: 'Missing or invalid tv parameter' }));
-          return;
-        }
-        try {
-          self.cookie = null;
-          self.authok = false;
-          self.awaitingPin = true;
-          try { fs.unlinkSync(self.cookiepath); } catch (e) {}
-          self.log('[' + self.name + '] 🗑️  Cookie deleted manually via UI — pairing required');
-          res.writeHead(200, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ success: true }));
-        } catch (e) {
-          res.writeHead(500, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ success: false, message: String(e) }));
-        }
-        return;
-      }
-
       if (pathname === '/api/tvs') {
         self.apiGetTVs(req, res);
       } else if (pathname === '/api/scan') {

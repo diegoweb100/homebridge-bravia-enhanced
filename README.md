@@ -23,6 +23,7 @@ HomeBridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **New pairing page** — clean PIN entry UI with live pairing status
 - **HDMI input status polling** — auto-detects connected/disconnected HDMI inputs with automatic API version fallback (v1.1 → v1.0)
 - **Verbose structured logging** — easier troubleshooting with prefixed log lines
+- **Volume accessory** — optional Lightbulb accessory to control TV volume and mute directly from HomeKit
 
 ---
 
@@ -139,6 +140,7 @@ If you use `externalaccessory: true`, after Homebridge restart:
 | `woladdress` | `255.255.255.255` | Subnet broadcast address for WOL |
 | `updaterate` | `5000` | Interval (ms) for TV power status polling |
 | `channelupdaterate` | `30000` | Interval (ms) for channel/input list refresh |
+| `volumeAccessory` | `false` | Publish a separate Lightbulb accessory to control volume (brightness) and mute (on/off) from HomeKit |
 | `debug` | `false` | Enable verbose debug logging for this TV |
 
 ---
