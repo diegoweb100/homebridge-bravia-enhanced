@@ -68,6 +68,16 @@ After pairing, open `http://homebridge.local:8999` (or the configured `serverPor
 - Use **Select All**, **Clear All**, **HD Channels Only** or **Top 20** shortcuts
 - Click **Save Selection** to push the selection to HomeKit immediately
 
+### Re-pairing / Force re-pairing
+
+If the TV stops responding or you want to manually reset the pairing, open the pairing page:
+
+```
+http://homebridge.local:8980/pair?tv=TV55
+```
+
+If already paired, a **🗑️ Delete cookie & force re-pairing** button will appear. Click it to delete the stored session cookie and trigger a new PIN request on the TV.
+
 ### External accessory mode
 
 If you use `externalaccessory: true`, after Homebridge restart:

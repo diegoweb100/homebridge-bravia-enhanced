@@ -6,6 +6,13 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.0.9] - 2026-03-14
+
+### Fixed
+- `pairing.js`: duplicate code block outside the IIFE caused the TV name field to appear blank on page load and prevented the pairing status from being checked
+
+---
+
 ## [1.0.8] - 2026-03-14
 
 ### Fixed
