@@ -1916,7 +1916,7 @@ const pinRequired = !paired;
       }
     });
     
-    this.webServer.listen(this.channelSelectorPort, () => {
+    this.webServer.listen(this.channelSelectorPort, '0.0.0.0', () => {
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
       self.log('[' + self.name + '] 🌐 Bravia Web UI - ACTIVE (Channel Selector + Pairing)');
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');

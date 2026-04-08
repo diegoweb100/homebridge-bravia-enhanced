@@ -6,6 +6,14 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.2.1] - 2026-04-08
+
+### Fixed
+- `startWebServer`: changed `listen(port)` to `listen(port, '0.0.0.0')` to explicitly bind on all network interfaces. On some Windows and Docker configurations Node.js was binding only on localhost, making the web UI (channel selector and pairing page) unreachable from other devices on the network
+- `config.schema.json`: removed hardcoded port 8999 from `headerDisplay` — the hint now refers users to the Homebridge log for the actual URL, which reflects any custom `serverPort` value
+
+---
+
 ## [1.2.0] - 2026-03-14
 
 ### Added

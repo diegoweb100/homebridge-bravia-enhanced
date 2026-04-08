@@ -1,7 +1,7 @@
 {
   "pluginAlias": "BraviaPlatform",
   "pluginType": "platform",
-  "headerDisplay": "Go to [http://${{HOSTNAME}}:8999](http://${{HOSTNAME}}:8999) to enter the PIN when your TV displays it, then use the same address to open the Channel Selector UI",
+  "headerDisplay": "After restarting Homebridge, check the log for the web UI URL (default port: 8999). Open that address to enter the PIN shown on your TV, then use the same address to access the Channel Selector UI.",
   "footerDisplay": "For documentation please see https://github.com/diegoweb100/homebridge-bravia-enhanced",
   "schema": {
     "tvs": {
