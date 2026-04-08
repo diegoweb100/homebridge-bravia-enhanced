@@ -6,6 +6,15 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.2.2] - 2026-04-08
+
+### Changed
+- Web UI URLs in the Homebridge log now show the actual machine IP address (read from `os.networkInterfaces()`) so the link is always correct and immediately usable
+- When a DNS domain suffix is configured on the host, it is read dynamically from the OS (`nmcli` on Linux, `scutil` on macOS, `ipconfig` on Windows) and a second URL using `hostname.suffix` is also shown as an alternative
+- Added `curl http://127.0.0.1:<port>/` line in the log to help diagnose connectivity issues
+
+---
+
 ## [1.2.1] - 2026-04-08
 
 ### Fixed

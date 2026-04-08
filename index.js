@@ -10,6 +10,48 @@ const { v4: uuidv4 } = require('uuid');
 // Base identifier for TV tuner channels to avoid collisions with HDMI/App identifiers.
 const TV_IDENTIFIER_BASE = 1000;
 
+// Reads the DNS domain suffix configured on the host without hardcoding any value.
+// Tries nmcli (Linux/NetworkManager), scutil (macOS), ipconfig (Windows).
+// Returns e.g. '.local' or '.deltatre.it' or '' if not determinable.
+function getDomainSuffix() {
+  const { execSync } = require('child_process');
+  const platform = os.platform();
+  try {
+    if (platform === 'linux') {
+      const conList = execSync('nmcli -t -f NAME,DEVICE con show --active 2>/dev/null', { timeout: 3000 }).toString().trim();
+      const firstCon = conList.split('\n')[0];
+      if (firstCon) {
+        const conName = firstCon.split(':')[0];
+        const out = execSync('nmcli -t -f IP4.DOMAIN con show "' + conName + '" 2>/dev/null', { timeout: 3000 }).toString();
+        const m = out.match(/IP4\.DOMAIN\[1\]:(.+)/);
+        if (m && m[1].trim()) return '.' + m[1].trim();
+      }
+    } else if (platform === 'darwin') {
+      const out = execSync('scutil --dns 2>/dev/null', { timeout: 3000 }).toString();
+      const m = out.match(/search domain\[0\]\s*:\s*(.+)/);
+      if (m && m[1].trim()) return '.' + m[1].trim();
+    } else if (platform === 'win32') {
+      const out = execSync('ipconfig /all', { timeout: 3000 }).toString();
+      const m = out.match(/Primary Dns Suffix[^:]*:\s*(.+)/i);
+      if (m && m[1].trim()) return '.' + m[1].trim();
+    }
+  } catch (e) {
+    // silent — fallback to IP only
+  }
+  return '';
+}
+
+// Helper: returns the first non-loopback IPv4 address or null.
+function getLocalIp() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && iface.internal === false) return iface.address;
+    }
+  }
+  return null;
+}
+
 var Service, Characteristic, Accessory, UUIDGen, STORAGE_PATH;
 
 class BraviaPlatform {
@@ -598,16 +640,28 @@ class SonyTV {
           }
         } catch (e) {}
 
-        self.log('Please enter the PIN that appears on your TV at http://' + os.hostname() + ':' + self.serverPort);
+        const _rIp     = getLocalIp();
+        const _rSuffix = getDomainSuffix();
+        const _rPort   = self.serverPort;
+        const _rIpBase = (_rIp ? 'http://' + _rIp : 'http://' + os.hostname()) + ':' + _rPort;
+        const _rDnBase = _rSuffix ? 'http://' + os.hostname() + _rSuffix + ':' + _rPort : null;
+        self.log('Please enter the PIN that appears on your TV at ' + _rIpBase + '/pair?tv=' + encodeURIComponent(self.name));
         self.awaitingPin = true;
         // Reuse the permanent web server (Channel Selector) for PIN entry.
-        self.log('[' + self.name + '] 🔑 Pairing: http://' + os.hostname() + ':' + self.serverPort + '/pair?tv=' + encodeURIComponent(self.name));
-        self.log('[' + self.name + '] 📺 Channels: http://' + os.hostname() + ':' + self.serverPort + '/  (available after pairing)');
+        self.log('[' + self.name + '] 🔑 Pairing: ' + _rIpBase + '/pair?tv=' + encodeURIComponent(self.name));
+        if (_rDnBase) self.log('[' + self.name + '] 🔑 Also try: ' + _rDnBase + '/pair?tv=' + encodeURIComponent(self.name));
+        self.log('[' + self.name + '] 📺 Channels: ' + _rIpBase + '/  (available after pairing)');
       } else {
+        const _rIp     = getLocalIp();
+        const _rSuffix = getDomainSuffix();
+        const _rPort   = self.serverPort;
+        const _rIpBase = (_rIp ? 'http://' + _rIp : 'http://' + os.hostname()) + ':' + _rPort;
+        const _rDnBase = _rSuffix ? 'http://' + os.hostname() + _rSuffix + ':' + _rPort : null;
         self.log('[' + self.name + '] ✓ Paired successfully');
         self.authok = true;
         self.awaitingPin = false;
-        self.log('[' + self.name + '] ✅ Channel Selector: http://' + os.hostname() + ':' + self.serverPort + '/');
+        self.log('[' + self.name + '] ✅ Channel Selector: ' + _rIpBase + '/');
+        if (_rDnBase) self.log('[' + self.name + '] ✅ Also try: ' + _rDnBase + '/');
         if (self.debug) self.log('[' + self.name + '] Starting channel scan');
         self.probeSystemInfo(); // detect device info and API versions after auth
         self.receiveSources(true);
@@ -1917,12 +1971,19 @@ const pinRequired = !paired;
     });
     
     this.webServer.listen(this.channelSelectorPort, '0.0.0.0', () => {
+      const _ip     = getLocalIp();
+      const _suffix = getDomainSuffix();
+      const _port   = self.channelSelectorPort;
+      const _ipBase = (_ip ? 'http://' + _ip : 'http://' + os.hostname()) + ':' + _port;
+      const _dnBase = _suffix ? 'http://' + os.hostname() + _suffix + ':' + _port : null;
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
       self.log('[' + self.name + '] 🌐 Bravia Web UI - ACTIVE (Channel Selector + Pairing)');
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
-      self.log('[' + self.name + '] 📺 Channels: http://' + os.hostname() + ':' + self.channelSelectorPort + '/');
-      self.log('[' + self.name + '] 🔑 Pairing : http://' + os.hostname() + ':' + self.channelSelectorPort + '/pair?tv=' + encodeURIComponent(self.name));
-      self.log('[' + self.name + '] 🛰️  Scan API: http://' + os.hostname() + ':' + self.channelSelectorPort + '/api/scan?tv=' + encodeURIComponent(self.name));
+      self.log('[' + self.name + '] 📺 Channels: ' + _ipBase + '/');
+      if (_dnBase) self.log('[' + self.name + '] 📺 Also try: ' + _dnBase + '/');
+      self.log('[' + self.name + '] 🔑 Pairing : ' + _ipBase + '/pair?tv=' + encodeURIComponent(self.name));
+      if (_dnBase) self.log('[' + self.name + '] 🔑 Also try: ' + _dnBase + '/pair?tv=' + encodeURIComponent(self.name));
+      self.log('[' + self.name + '] 🔧 Test locally: curl http://127.0.0.1:' + _port + '/');
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
     });
     
