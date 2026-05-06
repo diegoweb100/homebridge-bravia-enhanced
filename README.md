@@ -26,6 +26,7 @@ HomeBridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **Volume accessory** — optional Lightbulb accessory to control TV volume and mute directly from HomeKit
 - **Full API version auto-detection (v1.3.0+)** — at boot the plugin probes every Sony endpoint via `getVersions` + `getMethodTypes` and uses the actual versions supported by your specific TV for every API call. This fixes pairing on newer Bravia XR models (e.g. K-55XR8M2) where `actRegister` v1.0 is no longer accepted.
 - **Web server always active (v1.3.0+)** — the web server is required for pairing and is now started unconditionally. The `enableChannelSelector` flag now only controls whether the Channel Selector UI page is exposed.
+- **Comprehensive debug output (v1.4.0+)** — set `debug: true` per TV in the config and the plugin will produce a complete, self-contained diagnostic dump on startup: environment hints (Docker / Synology / RPi auto-detection), sanitised config, storage paths with file sizes, full capabilities table, every HTTP request/response with body and latency, detailed pairing trace, WOL trace, and global handlers for uncaught exceptions. Sensitive values (PSK, PIN, cookies, MAC) are masked.
 
 ---
 
@@ -181,6 +182,14 @@ npm run test
 If you find this plugin useful, consider buying me a coffee ☕
 
 [![PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/diegoweb100)
+
+---
+
+## Reporting issues
+
+If something does not work as expected, please open an issue on GitHub and **enable `debug: true`** in the plugin config for the affected TV, then attach the Homebridge log starting from the plugin's "ENVIRONMENT" banner. The debug output is designed to be self-contained: it includes the plugin version, the Node/OS environment, the (sanitised) config, the full TV capabilities table, every HTTP exchange and the pairing handshake. With that information it is usually possible to diagnose the issue without further round trips.
+
+Sensitive values (PSK, PIN, cookies, MAC address) are automatically masked in debug output, so the log can be shared safely.
 
 ---
 

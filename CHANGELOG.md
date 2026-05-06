@@ -6,6 +6,47 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.0] - 2026-05-06
+
+### Added
+- **Comprehensive debug output** — when `debug: true` is enabled the plugin now produces a self-contained, structured set of diagnostic banners that contain everything needed to investigate any issue without asking the user for additional information:
+  - 🛠️ **Environment banner** — plugin version, Node version, platform, arch, hostname, runtime hints (Docker, Synology, Raspberry Pi, LXC), CWD, PID, uptime, timezone
+  - ⚙️ **TV config banner** — full sanitised config dump (PSK masked, MAC partially masked, all flags visible)
+  - 💾 **Storage paths banner** — cookie / capabilities / fullscan paths, file size and last modified time, base STORAGE_PATH
+  - 📺 **Capabilities banner** — model, serial, firmware generation, interface version, every detected API method grouped by endpoint with its highest supported version
+  - 🔍 **State dump** — auth state, awaiting PIN, power state, cookie summary, channels published, web server status, last known volume
+  - 🔎 **Scan summary banner** — typed channel counts (TV / HDMI / app / other) plus HomeKit cap status
+- **HTTP request/response tracing** — every Sony API call logs method+version, request body, response status code, response body (truncated at 4KB), and round-trip latency in ms
+- **Pairing trace** (`🔑 PAIRING TRACE:`) — every step of the registration handshake: client ID, selected `actRegister` version, target endpoint, cookie state before and after, parsed error code with a key for the most common Sony error meanings (1 / 12 / 14 / 401 / 403 / 404)
+- **WOL trace** (`⚡ WOL TRACE:`) — magic packet target MAC (sanitised) and broadcast address, plus success/failure outcome
+- **Global error handlers** — when at least one TV has `debug:true`, the plugin installs `uncaughtException` and `unhandledRejection` handlers that surface the full stack trace into the Homebridge log so otherwise-silent crashes become visible
+
+### Security
+- PIN, PSK and full auth cookies are **never** logged in plain text. PSK is fully masked, MAC shows only the last two octets, cookies show only length and the last 6 characters.
+
+### Notes
+- The new debug output is a no-op unless `debug: true` is set per TV in the config, so existing installations are not affected.
+
+---
+
+## [1.3.0] - 2026-05-06
+
+### Changed
+- **Full API version auto-detection** — at boot the plugin now probes every Sony endpoint (`/sony/accessControl`, `/sony/system`, `/sony/avContent`, `/sony/audio`) via `getVersions` + `getMethodTypes` (no auth required) and populates `apiVersions` for every method exposed by the TV. Each API call now uses the highest version actually supported by the device instead of a hardcoded value.
+- **Refactored every Sony API call** to use `getApiVersion(method, defaultVersion)` instead of hardcoded `version: "1.0"` / `"1.1"` / `"1.2"`. Affected methods: `actRegister`, `getInterfaceInformation`, `getSystemInformation`, `getPowerStatus`, `setPowerStatus`, `getContentList`, `getCurrentExternalInputsStatus`, `getApplicationList`, `getPlayingContentInfo`, `setPlayContent`, `setActiveApp`, `getVolumeInformation`, `setAudioVolume`, `setAudioMute`. Only `getVersions` and `getMethodTypes` (the probe itself) keep `version: "1.0"` — by definition.
+- **`setAudioVolume` v1.2 detection** is now part of the general probe (no longer a separate post-auth probe). The optional `ui:"off"` parameter is included only when the TV actually supports v1.2 or higher.
+- **Web server is now always active** — decoupled from the `enableChannelSelector` flag. The server is required for the pairing flow (PIN entry page, device info panel) and now starts unconditionally. `enableChannelSelector` continues to control whether the Channel Selector UI page is exposed; when disabled, the UI routes (`/`, `/api/tvs`, `/api/scan`, `/api/inputs`, `/api/selection`, `/api/save`, `/channel-selector.js`) return 404 and the root path redirects to the pairing page.
+- `config.schema.json` — `enableChannelSelector` description clarified: "Controls only the Channel Selector UI page. The web server (needed for pairing) is always active."
+
+### Fixed
+- Bravia models with newer firmware (e.g. K-55XR8M2 with interface v6.3.0) that require `actRegister` v1.1 or higher and previously failed with `error [1] Internal Server Error` during pairing — the plugin now sends the actual version supported by the TV.
+
+### Notes
+- All in-source comments are now in English.
+- Existing `sonytv-capabilities-<name>.json` files are still compatible. The first boot after upgrade will repopulate `apiVersions` with the full method map detected from the TV.
+
+---
+
 ## [1.2.2] - 2026-04-08
 
 ### Changed

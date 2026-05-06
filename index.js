@@ -5,6 +5,7 @@ var base64 = require('base-64');
 var wol = require('wake_on_lan');
 var fs = require('fs');
 const os = require('os');
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 // Base identifier for TV tuner channels to avoid collisions with HDMI/App identifiers.
@@ -72,7 +73,21 @@ class BraviaPlatform {
     }
     
     log('Found ' + config.tvs.length + ' TV(s) in config');
-    
+
+    // Install global error handlers ONLY if at least one TV has debug enabled.
+    // These handlers help diagnose otherwise-silent plugin crashes by surfacing
+    // the full stack trace into the Homebridge log.
+    const anyDebug = (config.tvs || []).some((t) => t && t.debug === true);
+    if (anyDebug && !global.__braviaEnhancedErrorHandlersInstalled) {
+      global.__braviaEnhancedErrorHandlersInstalled = true;
+      process.on('uncaughtException', (err) => {
+        try { log('[homebridge-bravia-enhanced] ⚠️  uncaughtException: ' + (err && err.stack ? err.stack : err)); } catch (e) {}
+      });
+      process.on('unhandledRejection', (reason) => {
+        try { log('[homebridge-bravia-enhanced] ⚠️  unhandledRejection: ' + (reason && reason.stack ? reason.stack : reason)); } catch (e) {}
+      });
+    }
+
     this.devices = [];
     const self = this;
     api.on('didFinishLaunching', function () {
@@ -332,6 +347,13 @@ class SonyTV {
   // Start method: Called after constructor completes, initiates authentication and status polling
   start() {
     if (this.debug) this.log('[' + this.name + '] start() called for ' + this.name);
+
+    // Emit comprehensive debug banners (no-op unless debug:true).
+    // These banners contain everything needed to diagnose any user-reported
+    // problem without asking for additional information.
+    this._logEnvironmentBanner();
+    this._logConfigBanner();
+    this._logStorageBanner();
     
     // Start the permanent web server. The web server is ALWAYS started
     // because it is needed for the pairing PIN entry page (which is required
@@ -451,6 +473,184 @@ class SonyTV {
   // Do TV status check every 5 seconds
   // Creates and publishes a Lightbulb accessory that maps brightness→volume and on/off→mute
   // ══════════════════════════════════════════════════════════════════════════
+  // DEBUG HELPERS
+  // Sanitised, structured debug output. All helpers below are no-ops unless
+  // debug:true is set in the per-TV config. The intent is to provide ALL the
+  // info needed to diagnose any user-reported issue WITHOUT having to ask the
+  // user follow-up questions or run extra commands.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Mask sensitive values for debug output
+  // type: 'psk' (full mask), 'mac' (last 4 chars), 'cookie' (length + last 6 chars), 'pin' (full mask)
+  _sanitize(value, type) {
+    if (value === null || value === undefined) return '<null>';
+    const s = String(value);
+    if (s.length === 0) return '<empty>';
+    if (type === 'psk' || type === 'pin') {
+      return '***' + s.length + 'chars***';
+    }
+    if (type === 'mac') {
+      // AA:BB:CC:DD:EE:FF -> **:**:**:**:EE:FF
+      const parts = s.split(/[:-]/);
+      if (parts.length === 6) return '**:**:**:**:' + parts[4] + ':' + parts[5];
+      return s.slice(-5);
+    }
+    if (type === 'cookie') {
+      const tail = s.length > 6 ? s.slice(-6) : s;
+      return s.length + 'chars ending with ...' + tail;
+    }
+    return s;
+  }
+
+  // Print a formatted debug banner with a title and a list of "key: value" lines
+  _debugBanner(title, lines) {
+    if (!this.debug) return;
+    const tag = '[' + this.name + ']';
+    this.log(tag + ' ╔══════════════════════════════════════════════════════════');
+    this.log(tag + ' ║ ' + title);
+    this.log(tag + ' ╠══════════════════════════════════════════════════════════');
+    (lines || []).forEach((line) => {
+      this.log(tag + ' ║ ' + line);
+    });
+    this.log(tag + ' ╚══════════════════════════════════════════════════════════');
+  }
+
+  // Detect runtime environment hints (Docker/Synology/RPi/generic)
+  _detectEnvironment() {
+    const hints = [];
+    try {
+      if (fs.existsSync('/.dockerenv')) hints.push('docker');
+      if (fs.existsSync('/etc/synoinfo.conf')) hints.push('synology');
+      if (fs.existsSync('/proc/device-tree/model')) {
+        try {
+          const m = fs.readFileSync('/proc/device-tree/model', 'utf8');
+          if (m.toLowerCase().indexOf('raspberry') >= 0) hints.push('raspberry-pi');
+        } catch (e) {}
+      }
+      // Check cgroup for additional container hints
+      if (fs.existsSync('/proc/1/cgroup')) {
+        try {
+          const cg = fs.readFileSync('/proc/1/cgroup', 'utf8');
+          if (cg.indexOf('docker') >= 0 && hints.indexOf('docker') < 0) hints.push('docker');
+          if (cg.indexOf('lxc') >= 0) hints.push('lxc');
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return hints.length > 0 ? hints.join(', ') : 'generic';
+  }
+
+  // Log full environment + plugin + host info at startup
+  _logEnvironmentBanner() {
+    if (!this.debug) return;
+    let pkgVersion = 'unknown';
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+      pkgVersion = pkg.version || 'unknown';
+    } catch (e) {}
+    const lines = [
+      'Plugin: homebridge-bravia-enhanced v' + pkgVersion,
+      'Node: ' + process.version + ' | Platform: ' + process.platform + ' | Arch: ' + process.arch,
+      'Hostname: ' + os.hostname() + ' | Environment: ' + this._detectEnvironment(),
+      'CWD: ' + process.cwd(),
+      'PID: ' + process.pid + ' | uptime: ' + Math.round(process.uptime()) + 's',
+      'Timezone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone + ' | Locale: ' + (process.env.LANG || 'unset')
+    ];
+    this._debugBanner('🛠️  ENVIRONMENT', lines);
+  }
+
+  // Log full sanitised TV config at startup
+  _logConfigBanner() {
+    if (!this.debug) return;
+    const lines = [
+      'name: ' + this.name,
+      'ip: ' + this.ip + ' | tv port: ' + this.port,
+      'serverPort: ' + this.serverPort + ' | channelSelectorPort: ' + this.channelSelectorPort,
+      'enableChannelSelector: ' + this.enableChannelSelector,
+      'soundoutput: ' + this.soundoutput,
+      'tvsource: ' + (this.tvsource || '<none>'),
+      'externalaccessory: ' + (this.externalaccessory === true),
+      'volumeAccessory: ' + this.volumeAccessory,
+      'hideDisconnectedInputs: ' + (this.hideDisconnectedInputs === true),
+      'maxInputSources: ' + this.maxInputSources,
+      'updaterate: ' + this.updaterate + 'ms | channelupdaterate: ' + this.channelupdaterate + 'ms',
+      'mac: ' + this._sanitize(this.mac, 'mac'),
+      'woladdress: ' + (this.woladdress || '<default>'),
+      'psk: ' + this._sanitize(this.psk, 'psk'),
+      'applications: ' + (this.applications ? this.applications.length + ' configured' : '<none>'),
+      'sources: ' + (this.sources ? this.sources.join(', ') : '<defaults>')
+    ];
+    this._debugBanner('⚙️  TV CONFIG (sanitised)', lines);
+  }
+
+  // Log file paths and existence/size for storage files
+  _logStorageBanner() {
+    if (!this.debug) return;
+    const fileStat = (p) => {
+      try {
+        const s = fs.statSync(p);
+        return 'exists, ' + s.size + ' bytes, modified ' + s.mtime.toISOString();
+      } catch (e) { return 'not present'; }
+    };
+    const lines = [
+      'cookie: ' + this.cookiepath,
+      '   -> ' + fileStat(this.cookiepath),
+      'capabilities: ' + this.capabilitiesPath,
+      '   -> ' + fileStat(this.capabilitiesPath),
+      'fullscan: ' + this.fullScanCachePath,
+      '   -> ' + fileStat(this.fullScanCachePath),
+      'STORAGE_PATH base: ' + STORAGE_PATH
+    ];
+    this._debugBanner('💾 STORAGE PATHS', lines);
+  }
+
+  // Log full detected capabilities (model, firmware, all API versions)
+  // Called automatically when probe completes
+  _logCapabilitiesBanner() {
+    if (!this.debug) return;
+    const c = this.capabilities || {};
+    const iface = c.interface || {};
+    const sys = c.system || {};
+    const apiVersions = c.apiVersions || {};
+    // Group methods by endpoint for readability
+    const byEndpoint = {};
+    Object.keys(apiVersions).forEach((m) => {
+      const ep = this.methodEndpoints[m] || '<unknown>';
+      if (!byEndpoint[ep]) byEndpoint[ep] = [];
+      byEndpoint[ep].push(m + '=' + apiVersions[m]);
+    });
+    const lines = [
+      'Model: ' + (sys.model || iface.modelName || '<unknown>') + ' (' + (iface.productName || '?') + ')',
+      'Serial: ' + (sys.serial || '<not yet, requires pairing>'),
+      'Generation: ' + (sys.generation || '<not yet, requires pairing>'),
+      'Interface version: ' + (iface.interfaceVersion || '<unknown>'),
+      'Detected at: ' + (c.detectedAt || '<never>'),
+      'API methods detected: ' + Object.keys(apiVersions).length
+    ];
+    Object.keys(byEndpoint).sort().forEach((ep) => {
+      lines.push(ep + ':');
+      byEndpoint[ep].sort().forEach((m) => lines.push('   ' + m));
+    });
+    this._debugBanner('📺 TV CAPABILITIES', lines);
+  }
+
+  // Log current runtime state (auth, power, cookie, awaiting pin, etc.)
+  _logStateDump(reason) {
+    if (!this.debug) return;
+    const lines = [
+      'reason: ' + (reason || 'manual dump'),
+      'authok: ' + this.authok,
+      'awaitingPin: ' + this.awaitingPin,
+      'power: ' + this.power,
+      'receivingSources: ' + this.receivingSources,
+      'cookie: ' + this._sanitize(this.cookie, 'cookie'),
+      'channels in service list: ' + (this.channelServices ? this.channelServices.length : 0),
+      'webServer running: ' + (!!this.webServer),
+      'last volume known: ' + (this.capabilities && this.capabilities.lastKnownVolume) || 'unknown'
+    ];
+    this._debugBanner('🔍 STATE DUMP', lines);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // CAPABILITIES MODULE
   // Detects and persists device info and supported API versions
   // Each method is independent — failure of one does not affect others
@@ -554,6 +754,8 @@ class SonyTV {
         that.saveCapabilities();
         const detected = Object.keys(that.capabilities.apiVersions).length;
         if (that.debug) that.log('[' + that.name + '] ✓ API probe complete: ' + detected + ' methods detected');
+        // Dump full capabilities for diagnostics
+        that._logCapabilitiesBanner();
       }
     };
     endpoints.forEach((endpoint) => {
@@ -684,21 +886,48 @@ class SonyTV {
     const self = this;
     if (this.debug) this.log('[' + this.name + '] checkRegistration() called');
     if (this.debug) this.log('[' + this.name + '] registercheck: ' + this.registercheck + ', authok: ' + this.authok);
-    
+    if (this.debug) this._logStateDump('checkRegistration entry');
+
     this.registercheck = true;
     var clientId = 'HomeBridge-Bravia' + ':' + this.accessory.context.uuid;
     var actRegisterVersion = this.getApiVersion('actRegister', '1.0');
     var post_data = '{"id":8,"method":"actRegister","version":"' + actRegisterVersion + '","params":[{"clientid":"' + clientId + '","nickname":"homebridge"},[{"clientid":"' + clientId + '","value":"yes","nickname":"homebridge","function":"WOL"}]]}';
-    
+
+    if (this.debug) {
+      this.log('[' + this.name + '] 🔑 PAIRING TRACE: clientId=' + clientId);
+      this.log('[' + this.name + '] 🔑 PAIRING TRACE: actRegister version selected=' + actRegisterVersion + ' (from capabilities or default)');
+      this.log('[' + this.name + '] 🔑 PAIRING TRACE: TV endpoint=http://' + this.ip + ':' + this.port + '/sony/accessControl');
+      this.log('[' + this.name + '] 🔑 PAIRING TRACE: cookie before request=' + this._sanitize(this.cookie, 'cookie'));
+    }
     if (this.debug) this.log('[' + this.name + '] Sending registration check to ' + this.ip);
     
     var onError = function (err) {
       self.log('[' + self.name + '] Auth error: ' + err);
+      if (self.debug) {
+        self.log('[' + self.name + '] 🔑 PAIRING TRACE: network/transport error during actRegister: ' + err);
+        self.log('[' + self.name + '] 🔑 PAIRING TRACE: this typically means the TV is unreachable at ' + self.ip + ':' + self.port + ' (off, wrong IP, firewall blocking, or interface mismatch)');
+      }
       return false;
     };
     
     var onSucces = function (chunk) {
       if (self.debug) self.log('[' + self.name + '] Auth response received');
+      if (self.debug) self.log('[' + self.name + '] 🔑 PAIRING TRACE: TV response body=' + chunk);
+      // Try to parse and log structured info
+      if (self.debug) {
+        try {
+          const parsed = JSON.parse(chunk);
+          if (parsed.error) {
+            self.log('[' + self.name + '] 🔑 PAIRING TRACE: error code=' + parsed.error[0] + ' message=' + parsed.error[1]);
+            self.log('[' + self.name + '] 🔑 PAIRING TRACE: meaning of common codes: 1=Internal Server Error (often method/version mismatch), 14=Illegal Argument, 401=Auth required (PIN), 403=Forbidden, 404=Method Not Found, 12=Method Not Implemented at this version');
+          } else if (parsed.result !== undefined) {
+            self.log('[' + self.name + '] 🔑 PAIRING TRACE: success result=' + JSON.stringify(parsed.result));
+          }
+        } catch (e) {
+          self.log('[' + self.name + '] 🔑 PAIRING TRACE: response is not valid JSON');
+        }
+        self.log('[' + self.name + '] 🔑 PAIRING TRACE: cookie after request=' + self._sanitize(self.cookie, 'cookie'));
+      }
       if (chunk.indexOf('"error"') >= 0) {
         if (self.debug)
           self.log('[' + self.name + '] Auth error in response: ' + chunk);
@@ -1036,6 +1265,30 @@ class SonyTV {
     }
     this.receivingSources = false;
     if (this.debug) this.log('[' + this.name + '] syncAccessory() complete');
+    // Detailed scan summary banner — typed counts and HomeKit limit status
+    if (this.debug) {
+      let counts = { tv: 0, hdmi: 0, app: 0, other: 0 };
+      try {
+        (this.scannedChannels || []).forEach((ch) => {
+          const t = ch[2];
+          if (t === Characteristic.InputSourceType.TUNER) counts.tv++;
+          else if (t === Characteristic.InputSourceType.HDMI) counts.hdmi++;
+          else if (t === Characteristic.InputSourceType.APPLICATION) counts.app++;
+          else counts.other++;
+        });
+      } catch (e) {}
+      const lines = [
+        'scanned channels total: ' + (this.scannedChannels ? this.scannedChannels.length : 0),
+        '   - TV tuner: ' + counts.tv,
+        '   - HDMI: ' + counts.hdmi,
+        '   - apps: ' + counts.app,
+        '   - other: ' + counts.other,
+        'HomeKit services published: ' + (this.channelServices ? this.channelServices.length : 0),
+        'HomeKit input cap: ' + this.maxInputSources + (this.channelServices && this.channelServices.length >= this.maxInputSources ? '  ⚠️  REACHED' : ''),
+        'inputSourceMap size: ' + (this.inputSourceMap ? this.inputSourceMap.size : 0)
+      ];
+      this._debugBanner('🔎 SCAN SUMMARY', lines);
+    }
   }
   // initialize a scan for new sources
   receiveSources(checkPower = null) {
@@ -1748,13 +2001,18 @@ class SonyTV {
         callback(null);
     };
     var onWol = function (error) {
-      if (error)
+      if (error) {
         that.log('[' + that.name + '] ERROR sending WOL:', error);
+        if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: failed to send magic packet to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
+      } else {
+        if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: magic packet sent successfully to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
+      }
       if (!isNull(callback))
         callback(null);
     };
     if (state) {
       if (!isNull(this.mac)) {
+        if (this.debug) this.log('[' + this.name + '] ⚡ WOL TRACE: powering on via WOL, mac=' + this._sanitize(this.mac, 'mac') + ' broadcast=' + (this.woladdress || '255.255.255.255'));
         wol.wake(this.mac, {address: this.woladdress}, onWol);
       } else {
         var setPowerOnVersion = self.getApiVersion('setPowerStatus', '1.0');
@@ -1812,10 +2070,23 @@ class SonyTV {
       }, timeout);
       return;
     }
-    
-    if (that.debug)
-      that.log('[' + that.name + '] HTTP request to ' + url);
-    
+
+    // Identify the method+version being called for clearer debug output
+    var debugMethodInfo = '';
+    if (that.debug) {
+      try {
+        const parsed = JSON.parse(post_data);
+        debugMethodInfo = (parsed.method || '?') + ' v' + (parsed.version || '?') + ' id=' + (parsed.id || '?');
+      } catch (e) {
+        // Not JSON (e.g. SOAP / IRCC) — keep empty
+        debugMethodInfo = '<non-JSON body>';
+      }
+      that.log('[' + that.name + '] ▶ HTTP ' + url + ' [' + debugMethodInfo + '] (' + post_data.length + ' bytes out)');
+      // Full request body — already sanitised at construction (no PSK / no PIN ever go through actRegister body)
+      that.log('[' + that.name + '] ▶ REQ: ' + post_data);
+    }
+    var _t0 = Date.now();
+
     try {
       var post_options = that.getPostOptions(url);
       var post_req = http.request(post_options, function (res) {
@@ -1825,8 +2096,15 @@ class SonyTV {
           data += chunk;
         });
         res.on('end', function () {
-          if (that.debug)
-            that.log('[' + that.name + '] HTTP response (' + data.length + ' bytes)');
+          if (that.debug) {
+            const _ms = Date.now() - _t0;
+            that.log('[' + that.name + '] ◀ HTTP ' + res.statusCode + ' ' + url + ' [' + debugMethodInfo + '] (' + data.length + ' bytes in, ' + _ms + 'ms)');
+            // Full response body. Sony API responses do not contain user secrets — they contain
+            // method results, error codes, model info, channel lists. Safe to log in full.
+            // Truncate at 4KB to avoid spamming logs with huge channel lists.
+            const truncated = data.length > 4096 ? data.slice(0, 4096) + '... [truncated, total ' + data.length + ' bytes]' : data;
+            that.log('[' + that.name + '] ◀ RES: ' + truncated);
+          }
           if (!isNull(resultcallback)) {
             try {
               resultcallback(data);
@@ -1837,7 +2115,7 @@ class SonyTV {
         });
       });
       post_req.on('error', function (err) {
-        if (that.debug) that.log('[' + that.name + '] HTTP error: ' + err);
+        if (that.debug) that.log('[' + that.name + '] ✖ HTTP error on ' + url + ' [' + debugMethodInfo + ']: ' + err);
         if (!isNull(errcallback)) {
           errcallback(err);
         }
@@ -1951,9 +2229,7 @@ class SonyTV {
   
   startWebServer() {
     const self = this;
-    const path = require('path');
 
-    
     if (this.webServer) {
       if (this.debug) this.log('[' + this.name + '] Web server already running');
       return;
@@ -2149,7 +2425,12 @@ const pinRequired = !paired;
   
   handlePinEntry(pin, res) {
     this.pwd = pin;
-    this.log('[' + this.name + '] PIN received: ' + pin);
+    if (this.debug) {
+      this.log('[' + this.name + '] 🔑 PAIRING TRACE: PIN received from web UI: ' + this._sanitize(pin, 'pin'));
+      this.log('[' + this.name + '] 🔑 PAIRING TRACE: triggering checkRegistration to send PIN-authenticated actRegister');
+    } else {
+      this.log('[' + this.name + '] PIN received');
+    }
     this.registercheck = false;
     this.checkRegistration();
     res.writeHead(200, {'Content-Type': 'text/html'});
