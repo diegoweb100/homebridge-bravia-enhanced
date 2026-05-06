@@ -24,6 +24,8 @@ HomeBridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **HDMI input status polling** — auto-detects connected/disconnected HDMI inputs with automatic API version fallback (v1.1 → v1.0)
 - **Verbose structured logging** — easier troubleshooting with prefixed log lines
 - **Volume accessory** — optional Lightbulb accessory to control TV volume and mute directly from HomeKit
+- **Full API version auto-detection (v1.3.0+)** — at boot the plugin probes every Sony endpoint via `getVersions` + `getMethodTypes` and uses the actual versions supported by your specific TV for every API call. This fixes pairing on newer Bravia XR models (e.g. K-55XR8M2) where `actRegister` v1.0 is no longer accepted.
+- **Web server always active (v1.3.0+)** — the web server is required for pairing and is now started unconditionally. The `enableChannelSelector` flag now only controls whether the Channel Selector UI page is exposed.
 
 ---
 
@@ -132,7 +134,7 @@ If you use `externalaccessory: true`, after Homebridge restart:
 | `port` | `80` | HTTP port of the TV |
 | `serverPort` | `8999` | Port for the PIN entry / channel selector web server |
 | `channelSelectorPort` | same as `serverPort` | Override port for the channel selector UI |
-| `enableChannelSelector` | `true` | Set to `false` to disable the web UI |
+| `enableChannelSelector` | `true` | Controls only the Channel Selector UI page. The web server (needed for pairing) is always active, regardless of this option. |
 | `maxInputSources` | `98` | Max inputs to register in HomeKit (hard cap: 98) |
 | `externalaccessory` | `false` | Publish TV as external accessory (needed for multiple TVs in Remote app) |
 | `hideDisconnectedInputs` | `false` | Automatically hide HDMI inputs that are physically disconnected |

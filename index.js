@@ -190,14 +190,35 @@ class SonyTV {
     this.fullScanCachePath = STORAGE_PATH + '/sonytv-fullscan-' + this.name + '.json';
     this.capabilitiesPath = STORAGE_PATH + '/sonytv-capabilities-' + this.name + '.json';
     // Device capabilities — loaded from file or detected at runtime
+    // apiVersions is populated automatically at boot via getVersions probe on every Sony endpoint.
+    // Each method is mapped to the highest supported version reported by the TV.
     this.capabilities = {
       detectedAt: null,
       interface: null,   // from getInterfaceInformation (no auth)
       system: null,      // from getSystemInformation (auth required)
-      apiVersions: {
-        setAudioVolume: '1.0',
-        getCurrentExternalInputsStatus: '1.1' // start optimistic, fallback handled separately
-      }
+      apiVersions: {}    // method name -> highest supported version, populated dynamically
+    };
+    // Static map: method name -> Sony endpoint path. Used by getVersions probe and by callers.
+    this.methodEndpoints = {
+      // accessControl
+      'actRegister': '/sony/accessControl',
+      'getMethodTypes': '/sony/accessControl',
+      // system
+      'getInterfaceInformation': '/sony/system',
+      'getSystemInformation': '/sony/system',
+      'getPowerStatus': '/sony/system',
+      'setPowerStatus': '/sony/system',
+      // avContent
+      'getContentList': '/sony/avContent',
+      'getCurrentExternalInputsStatus': '/sony/avContent',
+      'getApplicationList': '/sony/avContent',
+      'getPlayingContentInfo': '/sony/avContent',
+      'setPlayContent': '/sony/avContent',
+      'setActiveApp': '/sony/avContent',
+      // audio
+      'getVolumeInformation': '/sony/audio',
+      'setAudioVolume': '/sony/audio',
+      'setAudioMute': '/sony/audio'
     };
     
     // HomeKit has a hardcoded limit of 100 services per accessory
@@ -312,14 +333,16 @@ class SonyTV {
   start() {
     if (this.debug) this.log('[' + this.name + '] start() called for ' + this.name);
     
-    // Start permanent web server
-    if (this.enableChannelSelector) {
-      try {
-        this.log('[' + this.name + '] Starting web server on port ' + this.channelSelectorPort);
-        this.startWebServer();
-      } catch (e) {
-        this.log('[' + this.name + '] ERROR Failed to start web server: ' + e);
-      }
+    // Start the permanent web server. The web server is ALWAYS started
+    // because it is needed for the pairing PIN entry page (which is required
+    // to authenticate with the TV the first time). The enableChannelSelector
+    // option only controls whether the channel selector UI page is exposed,
+    // not whether the web server itself is running.
+    try {
+      this.log('[' + this.name + '] Starting web server on port ' + this.channelSelectorPort);
+      this.startWebServer();
+    } catch (e) {
+      this.log('[' + this.name + '] ERROR Failed to start web server: ' + e);
     }
     if (this.debug) this.log('[' + this.name + '] Current state - authok: ' + this.authok + ', power: ' + this.power + ', receivingSources: ' + this.receivingSources);
     if (this.debug) this.log('[' + this.name + '] Accessory registered: ' + this.accessory.context.isRegisteredInHomeKit);
@@ -336,6 +359,7 @@ class SonyTV {
     this.setupVolumeAccessory();
     this.loadCapabilities();
     this.probeInterfaceInfo();
+    this.probeApiVersions();
     if (this.debug) this.log('[' + this.name + '] Auth + status polling started');
   }
   // Get the services (TV service, channels) from a restored HomeKit accessory
@@ -460,7 +484,8 @@ class SonyTV {
   // Probe getInterfaceInformation — authLevel: none, always available
   probeInterfaceInfo() {
     const that = this;
-    const post_data = '{"id":1,"method":"getInterfaceInformation","version":"1.0","params":[]}';
+    const getInterfaceInfoVersion = this.getApiVersion('getInterfaceInformation', '1.0');
+    const post_data = '{"id":1,"method":"getInterfaceInformation","version":"' + getInterfaceInfoVersion + '","params":[]}';
     const onError = (err) => {
       if (that.debug) that.log('[' + that.name + '] probeInterfaceInfo error: ' + err);
     };
@@ -487,7 +512,8 @@ class SonyTV {
   // Probe getSystemInformation — authLevel: private, requires cookie
   probeSystemInfo() {
     const that = this;
-    const post_data = '{"id":1,"method":"getSystemInformation","version":"1.0","params":[]}';
+    const getSystemInfoVersion = this.getApiVersion('getSystemInformation', '1.0');
+    const post_data = '{"id":1,"method":"getSystemInformation","version":"' + getSystemInfoVersion + '","params":[]}';
     const onError = (err) => {
       if (that.debug) that.log('[' + that.name + '] probeSystemInfo error: ' + err);
     };
@@ -506,8 +532,6 @@ class SonyTV {
         };
         that.log('[' + that.name + '] 🔍 System info: model=' + (info.model || '?') + ' serial=' + (info.serial || '?') + ' gen=' + (info.generation || '?'));
         that.saveCapabilities();
-        // After system info, probe optional API versions
-        that.probeApiVersions();
       } catch (e) {
         if (that.debug) that.log('[' + that.name + '] probeSystemInfo parse error: ' + e);
       }
@@ -515,27 +539,78 @@ class SonyTV {
     that.makeHttpRequest(onError, onSuccess, '/sony/system/', post_data, false);
   }
 
-  // Probe optional API versions — called after successful auth
-  // Each probe is independent and non-blocking
+  // Probe supported API versions on every Sony endpoint via getVersions + getMethodTypes.
+  // No auth required for either call. Runs at boot, before pairing.
+  // Result: this.capabilities.apiVersions is populated with the highest supported version
+  // for every method exposed by the TV.
   probeApiVersions() {
     const that = this;
-    // Probe setAudioVolume v1.2 (ui parameter support)
-    const post_v12 = '{"id":1,"method":"setAudioVolume","version":"1.2","params":[{"target":"' + that.soundoutput + '","volume":"' + (that.capabilities.lastKnownVolume || '10') + '","ui":"off"}]}';
-    const onError = () => {};
-    const onSuccess = (data) => {
-      try {
-        const json = JSON.parse(data);
-        if (json && json.error && json.error[0] === 14) {
-          that.capabilities.apiVersions.setAudioVolume = '1.0';
-          if (that.debug) that.log('[' + that.name + '] setAudioVolume: v1.2 not supported, using v1.0');
-        } else if (!json.error) {
-          that.capabilities.apiVersions.setAudioVolume = '1.2';
-          that.log('[' + that.name + '] setAudioVolume: v1.2 supported (UI feedback available)');
-        }
+    // Unique endpoints derived from the static method map
+    const endpoints = Array.from(new Set(Object.values(this.methodEndpoints)));
+    let pending = endpoints.length;
+    const done = () => {
+      pending--;
+      if (pending === 0) {
         that.saveCapabilities();
-      } catch (e) {}
+        const detected = Object.keys(that.capabilities.apiVersions).length;
+        if (that.debug) that.log('[' + that.name + '] ✓ API probe complete: ' + detected + ' methods detected');
+      }
     };
-    that.makeHttpRequest(onError, onSuccess, '/sony/audio/', post_v12, false);
+    endpoints.forEach((endpoint) => {
+      const post = '{"id":1,"method":"getVersions","version":"1.0","params":[]}';
+      const onErr = (err) => {
+        if (that.debug) that.log('[' + that.name + '] getVersions error on ' + endpoint + ': ' + err);
+        done();
+      };
+      const onOk = (data) => {
+        try {
+          const json = JSON.parse(data);
+          if (!json || !json.result || !json.result[0]) { done(); return; }
+          const versions = json.result[0]; // array of supported version strings, e.g. ["1.0","1.1","1.2"]
+          // Pick the highest version for this endpoint
+          const highest = versions.sort().slice(-1)[0];
+          // For each version, query getMethodTypes to learn which methods exist at that version
+          let vPending = versions.length;
+          const vDone = () => { vPending--; if (vPending === 0) done(); };
+          versions.forEach((v) => {
+            const mt = '{"id":2,"method":"getMethodTypes","version":"1.0","params":["' + v + '"]}';
+            that.makeHttpRequest(
+              () => vDone(),
+              (mtData) => {
+                try {
+                  const mtJson = JSON.parse(mtData);
+                  if (mtJson && mtJson.results) {
+                    mtJson.results.forEach((row) => {
+                      // row = [methodName, paramTypes, returnTypes, version]
+                      const methodName = row[0];
+                      const methodVersion = row[3];
+                      // Only record if endpoint matches (TV may expose other methods we do not know about)
+                      if (that.methodEndpoints[methodName] === endpoint) {
+                        const current = that.capabilities.apiVersions[methodName];
+                        // Keep the highest version for each method
+                        if (!current || methodVersion > current) {
+                          that.capabilities.apiVersions[methodName] = methodVersion;
+                        }
+                      }
+                    });
+                  }
+                } catch (e) {
+                  if (that.debug) that.log('[' + that.name + '] getMethodTypes parse error on ' + endpoint + ' v' + v + ': ' + e);
+                }
+                vDone();
+              },
+              endpoint + '/',
+              mt,
+              false
+            );
+          });
+        } catch (e) {
+          if (that.debug) that.log('[' + that.name + '] getVersions parse error on ' + endpoint + ': ' + e);
+          done();
+        }
+      };
+      that.makeHttpRequest(onErr, onOk, endpoint + '/', post, false);
+    });
   }
 
   // Get the best API version for a given method
@@ -612,7 +687,8 @@ class SonyTV {
     
     this.registercheck = true;
     var clientId = 'HomeBridge-Bravia' + ':' + this.accessory.context.uuid;
-    var post_data = '{"id":8,"method":"actRegister","version":"1.0","params":[{"clientid":"' + clientId + '","nickname":"homebridge"},[{"clientid":"' + clientId + '","value":"yes","nickname":"homebridge","function":"WOL"}]]}';
+    var actRegisterVersion = this.getApiVersion('actRegister', '1.0');
+    var post_data = '{"id":8,"method":"actRegister","version":"' + actRegisterVersion + '","params":[{"clientid":"' + clientId + '","nickname":"homebridge"},[{"clientid":"' + clientId + '","value":"yes","nickname":"homebridge","function":"WOL"}]]}';
     
     if (this.debug) this.log('[' + this.name + '] Sending registration check to ' + this.ip);
     
@@ -647,10 +723,12 @@ class SonyTV {
         const _rDnBase = _rSuffix ? 'http://' + os.hostname() + _rSuffix + ':' + _rPort : null;
         self.log('Please enter the PIN that appears on your TV at ' + _rIpBase + '/pair?tv=' + encodeURIComponent(self.name));
         self.awaitingPin = true;
-        // Reuse the permanent web server (Channel Selector) for PIN entry.
+        // The permanent web server hosts the pairing page.
         self.log('[' + self.name + '] 🔑 Pairing: ' + _rIpBase + '/pair?tv=' + encodeURIComponent(self.name));
         if (_rDnBase) self.log('[' + self.name + '] 🔑 Also try: ' + _rDnBase + '/pair?tv=' + encodeURIComponent(self.name));
-        self.log('[' + self.name + '] 📺 Channels: ' + _rIpBase + '/  (available after pairing)');
+        if (self.enableChannelSelector) {
+          self.log('[' + self.name + '] 📺 Channels: ' + _rIpBase + '/  (available after pairing)');
+        }
       } else {
         const _rIp     = getLocalIp();
         const _rSuffix = getDomainSuffix();
@@ -660,10 +738,12 @@ class SonyTV {
         self.log('[' + self.name + '] ✓ Paired successfully');
         self.authok = true;
         self.awaitingPin = false;
-        self.log('[' + self.name + '] ✅ Channel Selector: ' + _rIpBase + '/');
-        if (_rDnBase) self.log('[' + self.name + '] ✅ Also try: ' + _rDnBase + '/');
+        if (self.enableChannelSelector) {
+          self.log('[' + self.name + '] ✅ Channel Selector: ' + _rIpBase + '/');
+          if (_rDnBase) self.log('[' + self.name + '] ✅ Also try: ' + _rDnBase + '/');
+        }
         if (self.debug) self.log('[' + self.name + '] Starting channel scan');
-        self.probeSystemInfo(); // detect device info and API versions after auth
+        self.probeSystemInfo(); // detect device info after auth (API versions are already probed at boot)
         self.receiveSources(true);
       }
     };
@@ -1053,7 +1133,8 @@ class SonyTV {
       }
       that.receiveNextSources();
     };
-    var post_data = '{"id":13,"method":"getContentList","version":"1.0","params":[{ "source":"' + sourceName + '","stIdx": ' + startIndex + '}]}';
+    var getContentListVersion = that.getApiVersion('getContentList', '1.0');
+    var post_data = '{"id":13,"method":"getContentList","version":"' + getContentListVersion + '","params":[{ "source":"' + sourceName + '","stIdx": ' + startIndex + '}]}';
     if (that.debug) that.log('[' + that.name + '] API request: ' + post_data);
     that.makeHttpRequest(onError, onSucces, '/sony/avContent', post_data, false);
   }
@@ -1163,14 +1244,16 @@ class SonyTV {
       that.applySelectionFilterToScannedChannels();
       that.syncAccessory();
     };
-    var post_data = '{"id":13,"method":"getApplicationList","version":"1.0","params":[]}';
+    var getApplicationListVersion = that.getApiVersion('getApplicationList', '1.0');
+    var post_data = '{"id":13,"method":"getApplicationList","version":"' + getApplicationListVersion + '","params":[]}';
     that.makeHttpRequest(onError, onSucces, '/sony/appControl', post_data, false);
   }
   // TV HTTP call to poll currently playing content
   pollPlayContent() {
     // TODO: check app list if no play content for currentUri
     const that = this;
-    var post_data = '{"id":13,"method":"getPlayingContentInfo","version":"1.0","params":[]}';
+    var getPlayingContentInfoVersion = that.getApiVersion('getPlayingContentInfo', '1.0');
+    var post_data = '{"id":13,"method":"getPlayingContentInfo","version":"' + getPlayingContentInfoVersion + '","params":[]}';
     var onError = function (err) {
       if (that.debug)
         that.log('[' + that.name + '] Error polling play content: ' + err);
@@ -1230,7 +1313,8 @@ class SonyTV {
     const that = this;
     if (!that.power) return; // no point polling when TV is off
 
-    var post_data = '{"id":13,"method":"getCurrentExternalInputsStatus","version":"1.1","params":[]}';
+    var getExtInputsVersion = that.getApiVersion('getCurrentExternalInputsStatus', '1.1');
+    var post_data = '{"id":13,"method":"getCurrentExternalInputsStatus","version":"' + getExtInputsVersion + '","params":[]}';
     var onError = function (err) {
       if (that.debug) that.log('[' + that.name + '] ERROR polling external inputs: ' + err);
     };
@@ -1294,7 +1378,8 @@ class SonyTV {
   setPlayContent(uri) {
     const that = this;
     that.log('[' + that.name + '] Switching to: ' + uri);
-    var post_data = '{"id":13,"method":"setPlayContent","version":"1.0","params":[{ "uri": "' + uri + '" }]}';
+    var setPlayContentVersion = that.getApiVersion('setPlayContent', '1.0');
+    var post_data = '{"id":13,"method":"setPlayContent","version":"' + setPlayContentVersion + '","params":[{ "uri": "' + uri + '" }]}';
     var onError = function (err) {
       if (that.debug) that.log('[' + that.name + '] ERROR setting play content: ' + err);
     };
@@ -1307,7 +1392,8 @@ class SonyTV {
   setActiveApp(uri) {
     const that = this;
     that.log('[' + that.name + '] Launching app: ' + uri);
-    var post_data = '{"id":13,"method":"setActiveApp","version":"1.0","params":[{"uri":"' + uri + '"}]}';
+    var setActiveAppVersion = that.getApiVersion('setActiveApp', '1.0');
+    var post_data = '{"id":13,"method":"setActiveApp","version":"' + setActiveAppVersion + '","params":[{"uri":"' + uri + '"}]}';
     var onError = function (err) {
       if (that.debug) that.log('[' + that.name + '] ERROR launching app: ' + err);
     };
@@ -1452,7 +1538,8 @@ class SonyTV {
         callback(null, 0);
       return;
     }
-    var post_data = '{"id":4,"method":"getVolumeInformation","version":"1.0","params":[]}';
+    var getVolumeInfoVersion = that.getApiVersion('getVolumeInformation', '1.0');
+    var post_data = '{"id":4,"method":"getVolumeInformation","version":"' + getVolumeInfoVersion + '","params":[]}';
     var onError = function (err) {
       if (that.debug)
         if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
@@ -1503,7 +1590,8 @@ class SonyTV {
       return;
     }
     var merterd = muted ? 'true' : 'false';
-    var post_data = '{"id":13,"method":"setAudioMute","version":"1.0","params":[{"status":' + merterd + '}]}';
+    var setAudioMuteVersion = that.getApiVersion('setAudioMute', '1.0');
+    var post_data = '{"id":13,"method":"setAudioMute","version":"' + setAudioMuteVersion + '","params":[{"status":' + merterd + '}]}';
     var onError = function (err) {
       if (that.debug)
         if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
@@ -1528,7 +1616,8 @@ class SonyTV {
         callback(null, 0);
       return;
     }
-    var post_data = '{"id":4,"method":"getVolumeInformation","version":"1.0","params":[]}';
+    var getVolumeInfoVersion2 = that.getApiVersion('getVolumeInformation', '1.0');
+    var post_data = '{"id":4,"method":"getVolumeInformation","version":"' + getVolumeInfoVersion2 + '","params":[]}';
     var onError = function (err) {
       if (that.debug)
         if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
@@ -1578,7 +1667,16 @@ class SonyTV {
         callback(null);
       return;
     }
-    var post_data = '{"id":13,"method":"setAudioVolume","version":"1.0","params":[{"target":"' + that.soundoutput + '","volume":"' + volume + '"}]}';
+    // setAudioVolume v1.2 supports the "ui" parameter to suppress on-screen feedback.
+    // Build the params object based on the version actually supported by the TV.
+    var setAudioVolumeVersion = that.getApiVersion('setAudioVolume', '1.0');
+    var setAudioVolumeParams;
+    if (setAudioVolumeVersion === '1.2' || setAudioVolumeVersion > '1.2') {
+      setAudioVolumeParams = '{"target":"' + that.soundoutput + '","volume":"' + volume + '","ui":"off"}';
+    } else {
+      setAudioVolumeParams = '{"target":"' + that.soundoutput + '","volume":"' + volume + '"}';
+    }
+    var post_data = '{"id":13,"method":"setAudioVolume","version":"' + setAudioVolumeVersion + '","params":[' + setAudioVolumeParams + ']}';
     var onError = function (err) {
       if (that.debug)
         if (that.debug) that.log('[' + that.name + '] ERROR: ' + err);
@@ -1625,7 +1723,8 @@ class SonyTV {
       }
     };
     try {
-      var post_data = '{"id":2,"method":"getPowerStatus","version":"1.0","params":[]}';
+      var getPowerStatusVersion = self.getApiVersion('getPowerStatus', '1.0');
+      var post_data = '{"id":2,"method":"getPowerStatus","version":"' + getPowerStatusVersion + '","params":[]}';
       that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
     } catch (globalExcp) {
       if (that.debug)
@@ -1658,7 +1757,8 @@ class SonyTV {
       if (!isNull(this.mac)) {
         wol.wake(this.mac, {address: this.woladdress}, onWol);
       } else {
-        var post_data = '{"id":2,"method":"setPowerStatus","version":"1.0","params":[{"status":true}]}';
+        var setPowerOnVersion = self.getApiVersion('setPowerStatus', '1.0');
+        var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOnVersion + '","params":[{"status":true}]}';
         that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
       }
     } else {
@@ -1666,7 +1766,8 @@ class SonyTV {
         var post_data = this.createIRCC('AAAAAQAAAAEAAAAvAw==');
         this.makeHttpRequest(onError, onSucces, '', post_data, false);
       } else {
-        var post_data = '{"id":2,"method":"setPowerStatus","version":"1.0","params":[{"status":false}]}';
+        var setPowerOffVersion = self.getApiVersion('setPowerStatus', '1.0');
+        var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOffVersion + '","params":[{"status":false}]}';
         that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
       }
     }
@@ -1942,26 +2043,64 @@ const pinRequired = !paired;
         return;
       }
 
+      // Channel Selector routes are gated behind the enableChannelSelector option.
+      // The pairing flow above is always reachable; only the selector UI is optional.
       if (pathname === '/api/tvs') {
+        if (!self.enableChannelSelector) {
+          res.writeHead(404, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: 'Channel Selector is disabled in plugin config (enableChannelSelector=false)' }));
+          return;
+        }
         self.apiGetTVs(req, res);
       } else if (pathname === '/api/scan') {
+        if (!self.enableChannelSelector) {
+          res.writeHead(404, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: 'Channel Selector is disabled in plugin config (enableChannelSelector=false)' }));
+          return;
+        }
         self.apiScanChannels(req, res);
       } else if (pathname === '/api/inputs') {
+        if (!self.enableChannelSelector) {
+          res.writeHead(404, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: 'Channel Selector is disabled in plugin config (enableChannelSelector=false)' }));
+          return;
+        }
         self.apiGetExternalInputsStatus(req, res);
       } else if (pathname === '/api/selection') {
+        if (!self.enableChannelSelector) {
+          res.writeHead(404, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: 'Channel Selector is disabled in plugin config (enableChannelSelector=false)' }));
+          return;
+        }
         self.apiGetSelection(req, res);
       } else if (pathname === '/api/save') {
+        if (!self.enableChannelSelector) {
+          res.writeHead(404, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ success: false, message: 'Channel Selector is disabled in plugin config (enableChannelSelector=false)' }));
+          return;
+        }
         self.apiSaveSelection(req, res);
       } else if (pathname === '/channel-selector.js') {
+        if (!self.enableChannelSelector) {
+          res.writeHead(404);
+          res.end('Channel Selector is disabled');
+          return;
+        }
         self.serveFile(res, path.join(__dirname, 'web', 'channel-selector.js'), 'application/javascript');
       } else {
         // Default landing page:
         // - If the TV is not paired (no valid cookie / awaiting PIN), redirect to the Pairing page.
-        // - Otherwise show the Channel Selector.
+        // - Otherwise: show the Channel Selector if enabled, or a small info page explaining the flag is off.
         const cookieExists = (() => { try { return fs.existsSync(self.cookiepath); } catch (e) { return false; } })();
         const hasCookieInMemory = (!!self.cookie && String(self.cookie).length > 0);
         const paired = (self.authok === true) || ((cookieExists || hasCookieInMemory) && self.awaitingPin !== true);
         if (!paired) {
+          res.writeHead(302, { 'Location': '/pair?tv=' + encodeURIComponent(self.name) });
+          res.end();
+          return;
+        }
+        if (!self.enableChannelSelector) {
+          // Channel Selector UI is disabled; redirect to pairing page (still useful for re-pairing).
           res.writeHead(302, { 'Location': '/pair?tv=' + encodeURIComponent(self.name) });
           res.end();
           return;
@@ -1976,14 +2115,17 @@ const pinRequired = !paired;
       const _port   = self.channelSelectorPort;
       const _ipBase = (_ip ? 'http://' + _ip : 'http://' + os.hostname()) + ':' + _port;
       const _dnBase = _suffix ? 'http://' + os.hostname() + _suffix + ':' + _port : null;
+      const _selectorOn = self.enableChannelSelector;
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
-      self.log('[' + self.name + '] 🌐 Bravia Web UI - ACTIVE (Channel Selector + Pairing)');
+      self.log('[' + self.name + '] 🌐 Bravia Web UI - ACTIVE' + (_selectorOn ? ' (Channel Selector + Pairing)' : ' (Pairing only — Channel Selector disabled)'));
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
-      self.log('[' + self.name + '] 📺 Channels: ' + _ipBase + '/');
-      if (_dnBase) self.log('[' + self.name + '] 📺 Also try: ' + _dnBase + '/');
+      if (_selectorOn) {
+        self.log('[' + self.name + '] 📺 Channels: ' + _ipBase + '/');
+        if (_dnBase) self.log('[' + self.name + '] 📺 Also try: ' + _dnBase + '/');
+      }
       self.log('[' + self.name + '] 🔑 Pairing : ' + _ipBase + '/pair?tv=' + encodeURIComponent(self.name));
       if (_dnBase) self.log('[' + self.name + '] 🔑 Also try: ' + _dnBase + '/pair?tv=' + encodeURIComponent(self.name));
-      self.log('[' + self.name + '] 🔧 Test locally: curl http://127.0.0.1:' + _port + '/');
+      self.log('[' + self.name + '] 🔧 Test locally: curl http://127.0.0.1:' + _port + '/pair?tv=' + encodeURIComponent(self.name));
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
     });
     

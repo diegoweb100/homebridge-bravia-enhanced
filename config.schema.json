@@ -46,7 +46,7 @@
           },
           "enableChannelSelector": {
             "title": "Enable Channel Selector UI",
-            "description": "Enables the web-based Channel Selector. Disable if you don't need it.",
+            "description": "Controls only the Channel Selector UI page. The web server (needed for pairing) is always active.",
             "type": "boolean",
             "required": false
           },
