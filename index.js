@@ -1642,20 +1642,10 @@ class SonyTV {
     };
     var onSucces = function (data) {
       try {
-        const errCode = that._extractSonyErrorCode(data);
-        if (errCode === 12) {
-          // The TV claims this version is supported (via getMethodTypes) but rejects it at runtime.
-          // Downgrade and retry once.
-          if (that.debug) that.log('[' + that.name + '] External inputs status: error 12 at v' + getExtInputsVersion + ', attempting downgrade');
-          const newVersion = that._downgradeApiVersion('getCurrentExternalInputsStatus');
-          if (newVersion) {
-            // Retry once with the lower version
-            that.pollExternalInputsStatus();
-          }
-          return;
-        }
+        // Note: error 12 (Method Not Implemented at version) is now handled
+        // transparently by makeHttpRequest, which downgrades and retries automatically.
         if (data.indexOf('"error"') >= 0) {
-          if (that.debug) that.log('[' + that.name + '] External inputs status error response (code ' + errCode + ')');
+          if (that.debug) that.log('[' + that.name + '] External inputs status error response');
           return;
         }
         var json = JSON.parse(data);
@@ -2154,15 +2144,20 @@ class SonyTV {
     }
 
     // Identify the method+version being called for clearer debug output
+    // and to enable the transparent error-12 (Method Not Implemented) retry-with-downgrade flow.
+    var requestMethodName = null;
+    var requestMethodVersion = null;
     var debugMethodInfo = '';
+    try {
+      const parsed = JSON.parse(post_data);
+      requestMethodName = parsed.method || null;
+      requestMethodVersion = parsed.version || null;
+      debugMethodInfo = (parsed.method || '?') + ' v' + (parsed.version || '?') + ' id=' + (parsed.id || '?');
+    } catch (e) {
+      // Not JSON (e.g. SOAP / IRCC) — keep empty
+      debugMethodInfo = '<non-JSON body>';
+    }
     if (that.debug) {
-      try {
-        const parsed = JSON.parse(post_data);
-        debugMethodInfo = (parsed.method || '?') + ' v' + (parsed.version || '?') + ' id=' + (parsed.id || '?');
-      } catch (e) {
-        // Not JSON (e.g. SOAP / IRCC) — keep empty
-        debugMethodInfo = '<non-JSON body>';
-      }
       that.log('[' + that.name + '] ▶ HTTP ' + url + ' [' + debugMethodInfo + '] (' + post_data.length + ' bytes out)');
       // Full request body — already sanitised at construction (no PSK / no PIN ever go through actRegister body)
       that.log('[' + that.name + '] ▶ REQ: ' + post_data);
@@ -2186,6 +2181,32 @@ class SonyTV {
             // Truncate at 4KB to avoid spamming logs with huge channel lists.
             const truncated = data.length > 4096 ? data.slice(0, 4096) + '... [truncated, total ' + data.length + ' bytes]' : data;
             that.log('[' + that.name + '] ◀ RES: ' + truncated);
+          }
+          // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          // Auto-downgrade on error 12 (Method Not Implemented at this version).
+          // Some Sony firmware advertises a method+version via getMethodTypes but
+          // rejects it at runtime. We catch the error here, downgrade the cached
+          // version, rebuild the same request body with the new version, and retry
+          // exactly once. This is fully transparent to the caller — the original
+          // resultcallback is invoked with the response of the retried call.
+          // The downgrade tracker is bounded (each downgraded version is blacklisted)
+          // so a misbehaving method cannot cause an infinite retry loop.
+          // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          const errCode = that._extractSonyErrorCode(data);
+          if (errCode === 12 && requestMethodName && requestMethodVersion && that.methodEndpoints[requestMethodName]) {
+            const newVersion = that._downgradeApiVersion(requestMethodName);
+            if (newVersion && newVersion !== requestMethodVersion) {
+              try {
+                const parsed = JSON.parse(post_data);
+                parsed.version = newVersion;
+                const retryBody = JSON.stringify(parsed);
+                if (that.debug) that.log('[' + that.name + '] ↻ Retrying ' + requestMethodName + ' with v' + newVersion);
+                that.makeHttpRequest(errcallback, resultcallback, url, retryBody, false);
+                return;
+              } catch (e) {
+                if (that.debug) that.log('[' + that.name + '] retry rebuild failed: ' + e);
+              }
+            }
           }
           if (!isNull(resultcallback)) {
             try {
