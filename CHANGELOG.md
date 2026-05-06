@@ -6,6 +6,19 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.1] - 2026-05-06
+
+### Fixed
+- **Power state polling broken in 1.3.0/1.4.0** — `getPowerStatus`, `setPowerStatus` (on/off) used `self.getApiVersion(...)` inside scopes where the alias was actually `that`, causing `ReferenceError: self is not defined` on every poll cycle. The TV power state was therefore always reported as off in HomeKit even when the TV was on. Fixed all three occurrences. Surfaced thanks to the comprehensive debug output added in v1.4.0.
+- **Boot lifecycle ordering** — `loadCapabilities()` was called AFTER `checkRegistration()`, meaning the very first `actRegister` call after a Homebridge restart used the default version (`1.0`) even when a capabilities file with the correct higher version existed on disk. On Bravia models that reject `actRegister v1.0` (e.g. K-55XR8M2 with interface v6.3.0) this caused the first pairing attempt after every restart to fail. Now `loadCapabilities()` runs synchronously first, then the API probe runs and only after it completes (or after a 5 s safety timeout) is the first `checkRegistration()` triggered.
+- **Lexicographic version comparison bug** — version strings were compared with `>` and `.sort()` operators in three places (`probeApiVersions` highest-version selection, `setAudioVolume v1.2` detection). String comparison incorrectly returns `'1.10' < '1.2'`. Added a `compareVersions()` helper that splits on `.` and compares numerically, so future Sony API versions like `1.10` will be handled correctly.
+- Removed an unused `highest` variable in `probeApiVersions` (dead code from earlier draft).
+
+### Note
+- These fixes were caught during a full static-analysis audit of the v1.4.0 codebase, triggered by the user-reported "TV state always off" bug.
+
+---
+
 ## [1.4.0] - 2026-05-06
 
 ### Added

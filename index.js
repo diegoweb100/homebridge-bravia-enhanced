@@ -354,7 +354,16 @@ class SonyTV {
     this._logEnvironmentBanner();
     this._logConfigBanner();
     this._logStorageBanner();
-    
+
+    // STEP 1 (synchronous): load capabilities from disk if a previous probe exists.
+    // This makes detected API versions available immediately for the very first
+    // checkRegistration / actRegister call, which is critical on TVs (e.g. Bravia
+    // XR with interface v6.3.0+) that reject actRegister v1.0.
+    this.loadCapabilities();
+    if (this.debug && this.capabilities && Object.keys(this.capabilities.apiVersions || {}).length > 0) {
+      this._logCapabilitiesBanner();
+    }
+
     // Start the permanent web server. The web server is ALWAYS started
     // because it is needed for the pairing PIN entry page (which is required
     // to authenticate with the TV the first time). The enableChannelSelector
@@ -375,13 +384,29 @@ class SonyTV {
       this.log('[' + this.name + '] ⚠️  Accessory not registered but has channels - registering now');
       this.syncAccessory();
     }
-    
-    this.checkRegistration();
+
+    // STEP 2 (asynchronous): probe interface info and API versions in parallel.
+    // STEP 3 (asynchronous): once the probe completes (or after a 5s timeout if the
+    // TV is unreachable / off), trigger the first checkRegistration with the freshest
+    // possible API versions. Subsequent checkRegistration calls are scheduled by
+    // updateStatus() polling and will always have full capabilities available.
+    this.probeInterfaceInfo();
+    const self = this;
+    let bootCheckDone = false;
+    const doBootCheck = (reason) => {
+      if (bootCheckDone) return;
+      bootCheckDone = true;
+      if (self.debug) self.log('[' + self.name + '] 🚀 First checkRegistration triggered: ' + reason);
+      self.checkRegistration();
+    };
+    this.probeApiVersions(() => doBootCheck('API probe completed'));
+    // Safety net: if probe takes too long (TV off / unreachable), still try to register.
+    // The default fallback version '1.0' will be used and the call may fail, but the
+    // updateStatus polling will retry every updaterate ms until the TV comes online.
+    setTimeout(() => doBootCheck('probe timeout (5s)'), 5000);
+
     this.updateStatus();
     this.setupVolumeAccessory();
-    this.loadCapabilities();
-    this.probeInterfaceInfo();
-    this.probeApiVersions();
     if (this.debug) this.log('[' + this.name + '] Auth + status polling started');
   }
   // Get the services (TV service, channels) from a restored HomeKit accessory
@@ -743,11 +768,13 @@ class SonyTV {
   // No auth required for either call. Runs at boot, before pairing.
   // Result: this.capabilities.apiVersions is populated with the highest supported version
   // for every method exposed by the TV.
-  probeApiVersions() {
+  // Optional onComplete callback is invoked once when all endpoint probes finish (success or failure).
+  probeApiVersions(onComplete) {
     const that = this;
     // Unique endpoints derived from the static method map
     const endpoints = Array.from(new Set(Object.values(this.methodEndpoints)));
     let pending = endpoints.length;
+    let completedCalled = false;
     const done = () => {
       pending--;
       if (pending === 0) {
@@ -756,6 +783,10 @@ class SonyTV {
         if (that.debug) that.log('[' + that.name + '] ✓ API probe complete: ' + detected + ' methods detected');
         // Dump full capabilities for diagnostics
         that._logCapabilitiesBanner();
+        if (typeof onComplete === 'function' && !completedCalled) {
+          completedCalled = true;
+          try { onComplete(); } catch (e) { if (that.debug) that.log('[' + that.name + '] probe onComplete handler error: ' + e); }
+        }
       }
     };
     endpoints.forEach((endpoint) => {
@@ -769,8 +800,6 @@ class SonyTV {
           const json = JSON.parse(data);
           if (!json || !json.result || !json.result[0]) { done(); return; }
           const versions = json.result[0]; // array of supported version strings, e.g. ["1.0","1.1","1.2"]
-          // Pick the highest version for this endpoint
-          const highest = versions.sort().slice(-1)[0];
           // For each version, query getMethodTypes to learn which methods exist at that version
           let vPending = versions.length;
           const vDone = () => { vPending--; if (vPending === 0) done(); };
@@ -789,8 +818,8 @@ class SonyTV {
                       // Only record if endpoint matches (TV may expose other methods we do not know about)
                       if (that.methodEndpoints[methodName] === endpoint) {
                         const current = that.capabilities.apiVersions[methodName];
-                        // Keep the highest version for each method
-                        if (!current || methodVersion > current) {
+                        // Keep the highest version for each method (numeric comparison)
+                        if (!current || compareVersions(methodVersion, current) > 0) {
                           that.capabilities.apiVersions[methodName] = methodVersion;
                         }
                       }
@@ -1922,9 +1951,10 @@ class SonyTV {
     }
     // setAudioVolume v1.2 supports the "ui" parameter to suppress on-screen feedback.
     // Build the params object based on the version actually supported by the TV.
+    // Use a numeric comparison so future versions (e.g. v1.10) are handled correctly.
     var setAudioVolumeVersion = that.getApiVersion('setAudioVolume', '1.0');
     var setAudioVolumeParams;
-    if (setAudioVolumeVersion === '1.2' || setAudioVolumeVersion > '1.2') {
+    if (compareVersions(setAudioVolumeVersion, '1.2') >= 0) {
       setAudioVolumeParams = '{"target":"' + that.soundoutput + '","volume":"' + volume + '","ui":"off"}';
     } else {
       setAudioVolumeParams = '{"target":"' + that.soundoutput + '","volume":"' + volume + '"}';
@@ -1976,7 +2006,7 @@ class SonyTV {
       }
     };
     try {
-      var getPowerStatusVersion = self.getApiVersion('getPowerStatus', '1.0');
+      var getPowerStatusVersion = that.getApiVersion('getPowerStatus', '1.0');
       var post_data = '{"id":2,"method":"getPowerStatus","version":"' + getPowerStatusVersion + '","params":[]}';
       that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
     } catch (globalExcp) {
@@ -2015,7 +2045,7 @@ class SonyTV {
         if (this.debug) this.log('[' + this.name + '] ⚡ WOL TRACE: powering on via WOL, mac=' + this._sanitize(this.mac, 'mac') + ' broadcast=' + (this.woladdress || '255.255.255.255'));
         wol.wake(this.mac, {address: this.woladdress}, onWol);
       } else {
-        var setPowerOnVersion = self.getApiVersion('setPowerStatus', '1.0');
+        var setPowerOnVersion = that.getApiVersion('setPowerStatus', '1.0');
         var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOnVersion + '","params":[{"status":true}]}';
         that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
       }
@@ -2024,7 +2054,7 @@ class SonyTV {
         var post_data = this.createIRCC('AAAAAQAAAAEAAAAvAw==');
         this.makeHttpRequest(onError, onSucces, '', post_data, false);
       } else {
-        var setPowerOffVersion = self.getApiVersion('setPowerStatus', '1.0');
+        var setPowerOffVersion = that.getApiVersion('setPowerStatus', '1.0');
         var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOffVersion + '","params":[{"status":false}]}';
         that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
       }
@@ -2638,6 +2668,23 @@ const pinRequired = !paired;
 
 function isNull(object) {
   return object === undefined || object === null;
+}
+
+// Compare two Sony API version strings (e.g. "1.0", "1.2", "1.10").
+// Returns -1 if a<b, 0 if equal, 1 if a>b. Lexicographic comparison is unsafe
+// because "1.10" < "1.2" as strings; this function compares the numeric parts.
+function compareVersions(a, b) {
+  if (a === b) return 0;
+  const pa = String(a || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const va = pa[i] || 0;
+    const vb = pb[i] || 0;
+    if (va < vb) return -1;
+    if (va > vb) return 1;
+  }
+  return 0;
 }
 
 
