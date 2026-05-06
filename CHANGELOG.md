@@ -6,6 +6,20 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.2] - 2026-05-06
+
+### Fixed
+- **`getCurrentExternalInputsStatus` rejected at runtime** — some Sony firmware advertises support for v1.1 of this method via `getMethodTypes` but actually rejects calls at v1.1 with error code 12 (Method Not Implemented at this version), accepting only v1.0. The pre-1.3.0 plugin had a hardcoded v1.1→v1.0 fallback that was lost in the v1.3.0 refactor. Restored as a generic mechanism: any time the TV returns error code 12, the plugin downgrades the cached API version for that method and retries automatically. The corrected version is then persisted to the capabilities file.
+
+### Added
+- `_downgradeApiVersion(methodName)` — helper that walks the standard Sony version chain (1.2 → 1.1 → 1.0), skipping versions already proven to fail at runtime, and persists the corrected version. Bounded: returns `null` when no more fallbacks are available, so retry loops cannot run forever.
+- `_extractSonyErrorCode(responseText)` — small JSON helper that returns the Sony API error code (or `null`) from a response body.
+
+### Note
+- This issue affected pollExternalInputsStatus in particular, but the new downgrade mechanism is generic and can be wired into other API calls if similar runtime rejections are observed in future.
+
+---
+
 ## [1.4.1] - 2026-05-06
 
 ### Fixed

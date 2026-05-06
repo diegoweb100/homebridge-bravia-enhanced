@@ -852,6 +852,46 @@ class SonyTV {
     return defaultVersion || '1.0';
   }
 
+  // Handle a runtime "Method Not Implemented at this version" error (Sony error code 12)
+  // by downgrading the cached version of that method to the next-lower one we know exists.
+  // Some Sony firmware advertises a version via getMethodTypes but actually rejects calls at
+  // that version (it happened with getCurrentExternalInputsStatus on multiple Bravia models).
+  // We avoid an infinite loop by tracking which versions we have already tried and rejected.
+  // Returns the new version to try, or null if no fallback is available.
+  _downgradeApiVersion(methodName) {
+    if (!this._apiVersionBlacklist) this._apiVersionBlacklist = {};
+    if (!this._apiVersionBlacklist[methodName]) this._apiVersionBlacklist[methodName] = new Set();
+    const currentVersion = this.getApiVersion(methodName, '1.0');
+    this._apiVersionBlacklist[methodName].add(currentVersion);
+    // Standard Sony version progression: 1.2 -> 1.1 -> 1.0
+    const fallbackChain = ['1.2', '1.1', '1.0'];
+    for (let i = 0; i < fallbackChain.length; i++) {
+      const candidate = fallbackChain[i];
+      if (compareVersions(candidate, currentVersion) < 0 && !this._apiVersionBlacklist[methodName].has(candidate)) {
+        // Update capabilities and persist
+        if (!this.capabilities.apiVersions) this.capabilities.apiVersions = {};
+        this.capabilities.apiVersions[methodName] = candidate;
+        if (this.debug) this.log('[' + this.name + '] ⬇️  API version downgrade: ' + methodName + ' v' + currentVersion + ' rejected by TV (error 12), retrying with v' + candidate);
+        try { this.saveCapabilities(); } catch (e) {}
+        return candidate;
+      }
+    }
+    if (this.debug) this.log('[' + this.name + '] ⚠️  No more fallback versions for ' + methodName + ' (already tried: ' + Array.from(this._apiVersionBlacklist[methodName]).join(', ') + ')');
+    return null;
+  }
+
+  // Inspect a JSON-string response and return the Sony error code if present, else null.
+  _extractSonyErrorCode(responseText) {
+    if (!responseText || responseText.indexOf('"error"') < 0) return null;
+    try {
+      const parsed = JSON.parse(responseText);
+      if (parsed && Array.isArray(parsed.error) && parsed.error.length > 0) {
+        return parsed.error[0];
+      }
+    } catch (e) {}
+    return null;
+  }
+
   // Return device info as a plain object for the web UI
   getDeviceInfo() {
     return {
@@ -1602,8 +1642,20 @@ class SonyTV {
     };
     var onSucces = function (data) {
       try {
+        const errCode = that._extractSonyErrorCode(data);
+        if (errCode === 12) {
+          // The TV claims this version is supported (via getMethodTypes) but rejects it at runtime.
+          // Downgrade and retry once.
+          if (that.debug) that.log('[' + that.name + '] External inputs status: error 12 at v' + getExtInputsVersion + ', attempting downgrade');
+          const newVersion = that._downgradeApiVersion('getCurrentExternalInputsStatus');
+          if (newVersion) {
+            // Retry once with the lower version
+            that.pollExternalInputsStatus();
+          }
+          return;
+        }
         if (data.indexOf('"error"') >= 0) {
-          if (that.debug) that.log('[' + that.name + '] External inputs status error response');
+          if (that.debug) that.log('[' + that.name + '] External inputs status error response (code ' + errCode + ')');
           return;
         }
         var json = JSON.parse(data);
