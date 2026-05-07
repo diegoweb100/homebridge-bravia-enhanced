@@ -6,7 +6,20 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.4] - 2026-05-07
+## [1.4.5] - 2026-05-07
+
+### Fixed
+- **`actRegister` still rejected with `error [1] Internal Server Error` on Bravia XR firmware (interface v6.x and above) even with v1.4.4.** The `level:private` field added in v1.4.4 was correct, but the inner WOL object inside the second parameter array was still being sent with four fields (`clientid`, `value`, `nickname`, `function`). The schema returned by `getMethodTypes` on Bravia XR declares only `{function, value}` for that object, and the firmware rejects payloads with extra fields. The plugin now sends the inner object with only the two declared fields, matching the payload used by Sony's TV SideView app and other public Bravia REST API clients.
+
+### Compatibility
+- Verified empirically against Sony KD-55X9005B (interface v2.5.0): the two-field inner object is accepted with the same `{result:[],"id":8}` response as the four-field form. Older Bravia firmware tolerates extra fields, so this change is backward-compatible across every Sony Bravia generation supported by the plugin. No configuration change is required for existing installations.
+
+### Recommended after upgrading from v1.4.4 or earlier
+- Existing cookies may have been issued with limited authorisation level. To get a full-privilege cookie issued under the corrected payload, delete `sonycookie_<TVNAME>` from the plugin storage directory and restart Homebridge to trigger a fresh PIN pairing. This step is optional for read operations (power, volume, channels) but **required** if `setActiveApp` or `setPlayContent` operations on apps and HDMI inputs return a `webauth` URL instead of a normal JSON-RPC response.
+
+---
+
+
 
 ### Fixed
 - **`actRegister` rejected with `error [1] Internal Server Error` on Bravia XR firmware (interface v6.x and above, e.g. K-55XR8M2)** — newer Bravia firmware declares `level` as a required parameter in the `actRegister v1.0` schema returned by `getMethodTypes`, and rejects pairing requests that omit it. The plugin now sends `"level":"private"` in the registration payload, which is the value documented by Sony for a paired domestic client and the same value used by Sony's own TV SideView application and other public Bravia REST API clients. Older Bravia firmware that does not include `level` in the schema (e.g. KD-55X9005B with interface v2.5.0) ignores the extra field, so this change is backward-compatible across every Sony Bravia generation supported by the plugin.
