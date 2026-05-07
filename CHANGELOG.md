@@ -6,7 +6,17 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.6] - 2026-05-07
+## [1.4.7] - 2026-05-07
+
+### Fixed
+- **Homebridge logged `Failed to save cached accessories to disk: Cannot serialize accessory <name> - missing associated platform` after every reconcile cycle when the TV was configured with `externalaccessory: true`.** The plugin called `updatePlatformAccessories` on every change regardless of whether the accessory was external or platform-managed. External accessories live outside Homebridge's `cachedAccessories` file (they are published with `publishExternalAccessories` and recreated at every boot), so calling `updatePlatformAccessories` on them triggers a cache serialisation that has no platform record to attach to, producing the noisy error. The plugin now skips the platform-cache update for external accessories. Their state is already live on the running accessory and persisted via the existing `saveChannelsToFile` and on-disk context, so no change is lost.
+
+### Notes
+- The error was harmless in practice (`externalaccessory: true` means the cache is not used for that TV anyway), but it spammed the Homebridge log every reconcile cycle and triggered the alarming-sounding "Your accessories will not persist between restarts until this issue is resolved" warning. With this fix the log stays clean.
+
+---
+
+
 
 ### Fixed
 - **Apps with non-`kamaji://` URIs (e.g. "Mirroring schermo" → `preset://wifi-display`) could not be activated from HomeKit.** The web UI used to add configured app titles with a synthetic `appControl:<title>` URI even when the TV had already returned the same app with its real URI in `getApplicationList`. Selecting the synthetic entry produced an unusable selection that the plugin removed as "stale" at the next reconcile cycle. The web UI now deduplicates app entries by title (case-insensitive) instead of by URI, so the real URI from the TV always wins. Selections saved with the legacy synthetic URI by previous versions are still honoured: the reconcile step falls back to title matching so existing user selections survive without manual cleanup.

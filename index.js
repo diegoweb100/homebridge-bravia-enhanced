@@ -1346,8 +1346,21 @@ class SonyTV {
         this.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [this.accessory]);
       }
     } else if (changeDone) {
-      if (this.debug) this.log('[' + this.name + '] Updating accessory for ' + this.name);
-      this.platform.api.updatePlatformAccessories([this.accessory]);
+      // Only platform-managed accessories live in Homebridge's cachedAccessories file.
+      // External accessories are published directly with publishExternalAccessories and
+      // are not part of the cache. Calling updatePlatformAccessories on an external
+      // accessory triggers a cache write and Homebridge logs:
+      //   "Failed to save cached accessories to disk: Cannot serialize accessory <name>
+      //    - missing associated platform"
+      // because external accessories have no associated platform record. The change is
+      // already live on the running accessory and persisted via saveChannelsToFile,
+      // so we just skip the platform-cache update for the external case.
+      if (this.accessory.context.isexternal) {
+        if (this.debug) this.log('[' + this.name + '] Accessory changed (external, skipping platform cache update)');
+      } else {
+        if (this.debug) this.log('[' + this.name + '] Updating accessory for ' + this.name);
+        this.platform.api.updatePlatformAccessories([this.accessory]);
+      }
     }
     if (this.accessory.context.isexternal) {
       if (this.debug) this.log('[' + this.name + '] External accessory, calling saveChannelsToFile()');
