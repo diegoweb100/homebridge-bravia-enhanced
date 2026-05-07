@@ -960,7 +960,16 @@ class SonyTV {
     this.registercheck = true;
     var clientId = 'HomeBridge-Bravia' + ':' + this.accessory.context.uuid;
     var actRegisterVersion = this.getApiVersion('actRegister', '1.0');
-    var post_data = '{"id":8,"method":"actRegister","version":"' + actRegisterVersion + '","params":[{"clientid":"' + clientId + '","nickname":"homebridge"},[{"clientid":"' + clientId + '","value":"yes","nickname":"homebridge","function":"WOL"}]]}';
+    // Sony Bravia REST API requires "level" in the first param object of actRegister.
+    // The value "private" is the standard authentication level for a paired domestic
+    // client (the same value used by Sony's TV SideView app and documented in the
+    // BRAVIA Professional Displays REST API spec). Newer Bravia XR firmware (interface
+    // v6.x and above, e.g. K-55XR8M2) declares "level" as required in the v1.0 schema
+    // and rejects requests without it with error [1] Internal Server Error. Older
+    // firmware (e.g. KD-55X9005B with interface v2.5.0) declares only clientid and
+    // nickname in the schema but ignores extra fields, so adding "level" is safe and
+    // backward-compatible across all Sony Bravia generations.
+    var post_data = '{"id":8,"method":"actRegister","version":"' + actRegisterVersion + '","params":[{"clientid":"' + clientId + '","nickname":"homebridge","level":"private"},[{"clientid":"' + clientId + '","value":"yes","nickname":"homebridge","function":"WOL"}]]}';
 
     if (this.debug) {
       this.log('[' + this.name + '] 🔑 PAIRING TRACE: clientId=' + clientId);

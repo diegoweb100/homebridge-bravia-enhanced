@@ -6,7 +6,17 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.3] - 2026-05-06
+## [1.4.4] - 2026-05-07
+
+### Fixed
+- **`actRegister` rejected with `error [1] Internal Server Error` on Bravia XR firmware (interface v6.x and above, e.g. K-55XR8M2)** — newer Bravia firmware declares `level` as a required parameter in the `actRegister v1.0` schema returned by `getMethodTypes`, and rejects pairing requests that omit it. The plugin now sends `"level":"private"` in the registration payload, which is the value documented by Sony for a paired domestic client and the same value used by Sony's own TV SideView application and other public Bravia REST API clients. Older Bravia firmware that does not include `level` in the schema (e.g. KD-55X9005B with interface v2.5.0) ignores the extra field, so this change is backward-compatible across every Sony Bravia generation supported by the plugin.
+
+### Note
+- Diagnosed by inspecting the schema returned by the TV itself via `getMethodTypes`. On a Bravia 8 II / K-55XR8M2 the schema declares three required fields (`clientid`, `nickname`, `level`); on the older KD-55X9005B it declares only the first two. Sending `level` works on both because Sony's REST layer ignores fields not present in the older schema.
+
+---
+
+
 
 ### Changed
 - **Auto-downgrade on Sony error 12 is now centralised in `makeHttpRequest`** — in v1.4.2 the downgrade was wired only inside `pollExternalInputsStatus`. Now it runs inside `makeHttpRequest`, so it applies to **every** Sony API call automatically: `actRegister`, `getInterfaceInformation`, `getSystemInformation`, `getPowerStatus`, `setPowerStatus`, `getContentList`, `getCurrentExternalInputsStatus`, `getApplicationList`, `getPlayingContentInfo`, `setPlayContent`, `setActiveApp`, `getVolumeInformation`, `setAudioVolume`, `setAudioMute`. When any call returns error 12, the plugin downgrades the cached version, rebuilds the request body with the new version, retries once, and invokes the original caller's `resultcallback` with the retry response — fully transparent to the caller. The corrected version is persisted to the capabilities file.
