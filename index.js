@@ -1293,8 +1293,10 @@ class SonyTV {
     this.log('[' + this.name + '] ✓ Added ' + addedCount + ' new channels');
     this.log('[' + this.name + '] Total channels now: ' + this.channelServices.length + ' / ' + MAX_CHANNELS);
     
-    // Remove channels that no longer exist on TV
-    if (this.debug) this.log('[' + this.name + '] Removing stale channels...');
+    // Remove channels that no longer exist on TV. Only log if something is actually
+    // removed, to avoid spamming the log with "Removing stale channels..." every
+    // reconcile cycle (every channelupdaterate ms) when there is nothing to remove.
+    let removedCount = 0;
     this.channelServices.forEach((service, idx, obj) => {
       if (!self.haveChannel(service)) {
         // TODO: make this function?
@@ -1305,8 +1307,12 @@ class SonyTV {
         self.log('[' + self.name + '] Removing channel: ' + service.getCharacteristic(Characteristic.ConfiguredName).value);
         obj.splice(idx, 1);
         changeDone = true;
+        removedCount++;
       }
     });
+    if (removedCount > 0) {
+      this.log('[' + this.name + '] ✓ Removed ' + removedCount + ' stale channels');
+    }
     
     if (!this.accessory.context.isRegisteredInHomeKit) {
       if (this.debug) this.log('[' + this.name + '] Registering accessory in HomeKit');
@@ -2476,6 +2482,10 @@ const pinRequired = !paired;
           return;
         }
         self.apiSaveSelection(req, res);
+      } else if (pathname === '/api/delete-cookie' && req.method === 'POST') {
+        // Always available regardless of enableChannelSelector flag because the
+        // Pairing page (which is part of the always-on web server) needs it.
+        self.apiDeleteCookie(req, res);
       } else if (pathname === '/channel-selector.js') {
         if (!self.enableChannelSelector) {
           res.writeHead(404);
@@ -2662,6 +2672,42 @@ const pinRequired = !paired;
       }
     });
   }
+
+  // Force re-pairing by deleting the stored cookie and clearing in-memory auth state.
+  // The Pairing UI calls this endpoint when the user clicks "Delete cookie & force re-pairing".
+  // Note: this only resets the plugin side. The TV may still hold the previous client_id in
+  // its registered devices list, in which case the next actRegister will be accepted without
+  // a new PIN. To force a fresh PIN prompt the user must also remove "homebridge" from the
+  // TV's "Network -> Remote Start -> Registered Devices" menu.
+  apiDeleteCookie(req, res) {
+    const self = this;
+    const urlObject = url.parse(req.url, true);
+    const tvName = urlObject.query.tv;
+
+    if (!tvName || tvName !== self.name) {
+      return self.sendJSON(res, { success: false, message: 'TV mismatch' });
+    }
+
+    try {
+      let removed = false;
+      if (fs.existsSync(self.cookiepath)) {
+        fs.unlinkSync(self.cookiepath);
+        removed = true;
+      }
+      // Clear in-memory state so the next polling cycle triggers a fresh registration.
+      self.cookie = '';
+      self.authok = false;
+      self.registercheck = false;
+      if (self.debug) self.log('[' + self.name + '] Cookie deleted by web UI request, in-memory auth state reset');
+      self.sendJSON(res, {
+        success: true,
+        message: removed ? 'Cookie deleted' : 'No cookie file present, in-memory state reset'
+      });
+    } catch (e) {
+      self.log('[' + self.name + '] ERROR deleting cookie: ' + e.toString());
+      self.sendJSON(res, { success: false, message: 'Could not delete cookie: ' + e.toString() });
+    }
+  }
   
   sendJSON(res, data) {
     res.writeHead(200, {'Content-Type': 'application/json'});
@@ -2680,18 +2726,26 @@ const pinRequired = !paired;
 
   // Add configured applications to a formatted channel list for the web UI (Option A: separate "Applications" section)
   // Avoid duplicates if the TV scan already returned apps.
+  // The deduplication key is the *title* (case-insensitive, trimmed): if the TV's getApplicationList
+  // already returned an app with the same name (with its real URI like "preset://wifi-display" or
+  // "kamaji://BIV-3607"), we keep that and skip the synthetic "appControl:<title>" entry. Otherwise
+  // an entry from config.applications that the TV does not expose is still added with the synthetic
+  // URI so it remains visible in the web UI.
   appendApplicationsToWebChannels(formattedChannels) {
     try {
       if (!Array.isArray(formattedChannels)) return formattedChannels;
       const apps = Array.isArray(this.applications) ? this.applications : [];
       if (apps.length === 0) return formattedChannels;
 
-      const existing = new Set(formattedChannels.map(c => c && c.uri).filter(Boolean));
+      const norm = (s) => String(s || '').toLowerCase().trim();
+      const existingTitles = new Set(
+        formattedChannels.map(c => norm(c && c.name)).filter(Boolean)
+      );
       apps.forEach(app => {
         const title = (app && (app.title || app.name)) ? (app.title || app.name) : null;
         if (!title) return;
+        if (existingTitles.has(norm(title))) return;
         const uri = 'appControl:' + title;
-        if (existing.has(uri)) return;
         formattedChannels.push({
           name: title,
           uri,
@@ -2699,7 +2753,7 @@ const pinRequired = !paired;
           channelNumber: 'APP',
           type: 'app'
         });
-        existing.add(uri);
+        existingTitles.add(norm(title));
       });
       return formattedChannels;
     } catch (e) {
@@ -2732,10 +2786,25 @@ const pinRequired = !paired;
     if (!selectedUris || selectedUris.length === 0) {
       return;
     }
+    // Primary lookup: exact URI match
     const byUri = new Map(this.scannedChannels.map(ch => [ch[1], ch]));
+    // Fallback lookup: title match (case-insensitive, trimmed). Used to recover
+    // selections saved with the legacy synthetic "appControl:<title>" URI from
+    // versions <= 1.4.5, where the web UI listed configured apps with a fake URI
+    // that never matched the real one returned by the TV (e.g. "preset://wifi-display").
+    const norm = (s) => String(s || '').toLowerCase().trim();
+    const byTitle = new Map(this.scannedChannels.map(ch => [norm(ch[0]), ch]));
+
     const filtered = [];
     selectedUris.forEach(uri => {
-      const ch = byUri.get(uri);
+      let ch = byUri.get(uri);
+      if (!ch && typeof uri === 'string' && uri.indexOf('appControl:') === 0) {
+        const legacyTitle = uri.substring('appControl:'.length);
+        ch = byTitle.get(norm(legacyTitle));
+        if (ch && this.debug) {
+          this.log('[' + this.name + '] Legacy app URI "' + uri + '" matched by title to real URI: ' + ch[1]);
+        }
+      }
       if (ch) filtered.push(ch);
     });
     // If some selected URIs weren't in the scan, keep what we have.

@@ -6,7 +6,19 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.5] - 2026-05-07
+## [1.4.6] - 2026-05-07
+
+### Fixed
+- **Apps with non-`kamaji://` URIs (e.g. "Mirroring schermo" → `preset://wifi-display`) could not be activated from HomeKit.** The web UI used to add configured app titles with a synthetic `appControl:<title>` URI even when the TV had already returned the same app with its real URI in `getApplicationList`. Selecting the synthetic entry produced an unusable selection that the plugin removed as "stale" at the next reconcile cycle. The web UI now deduplicates app entries by title (case-insensitive) instead of by URI, so the real URI from the TV always wins. Selections saved with the legacy synthetic URI by previous versions are still honoured: the reconcile step falls back to title matching so existing user selections survive without manual cleanup.
+- **`/api/delete-cookie` route returned the channel-selector HTML page instead of a JSON response.** The route was referenced by the Pairing UI but never registered in the web server, so the request fell through to the default fallback handler and the browser-side `r.json()` parse failed, surfacing as a generic "Network error" toast. The route is now registered (POST only) and the handler clears both the on-disk cookie and the in-memory auth state. The Pairing page also detects non-JSON responses explicitly and surfaces a clearer error message.
+- **`Removing stale channels...` log line was printed every reconcile cycle (every `channelupdaterate` ms, default 30 s) regardless of whether anything was actually removed.** The header line is gone and a single summary line `✓ Removed N stale channels` is now emitted only when at least one channel is dropped.
+
+### Notes
+- The selected-channels file written by `<= 1.4.5` may contain `appControl:<title>` URIs. Thanks to the legacy fallback in `applySelectionFilterToScannedChannels` these continue to work without intervention. If you want a clean file, untick and retick the affected app in the Channel Selector UI and click Save.
+
+---
+
+
 
 ### Fixed
 - **`actRegister` still rejected with `error [1] Internal Server Error` on Bravia XR firmware (interface v6.x and above) even with v1.4.4.** The `level:private` field added in v1.4.4 was correct, but the inner WOL object inside the second parameter array was still being sent with four fields (`clientid`, `value`, `nickname`, `function`). The schema returned by `getMethodTypes` on Bravia XR declares only `{function, value}` for that object, and the firmware rejects payloads with extra fields. The plugin now sends the inner object with only the two declared fields, matching the payload used by Sony's TV SideView app and other public Bravia REST API clients.

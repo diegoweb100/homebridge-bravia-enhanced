@@ -138,15 +138,23 @@
       const r = await fetch(`/api/delete-cookie?tv=${encodeURIComponent(tv)}`,{
         method:'POST'
       });
+      // Detect server-side route mismatch where the fallback handler returns HTML
+      // instead of the expected JSON response (was the case before plugin v1.4.6
+      // when /api/delete-cookie was not registered as a server route).
+      const ctype = (r.headers && r.headers.get) ? (r.headers.get('content-type') || '') : '';
+      if (ctype.indexOf('application/json') === -1) {
+        showToast('error','Server error','Endpoint did not return JSON (status '+ r.status +'). Plugin may need to be updated to v1.4.6 or later.');
+        return;
+      }
       const data = await r.json();
       if (data.success){
-        showToast('success','Cookie deleted','Re-pairing required. Turn on the TV to get a new PIN.');
+        showToast('success','Cookie deleted', data.message || 'Re-pairing required. Turn on the TV to get a new PIN.');
         setTimeout(refreshStatus, 800);
       } else {
         showToast('error','Error', data.message || 'Could not delete cookie');
       }
     }catch(e){
-      showToast('error','Error','Network error while deleting cookie');
+      showToast('error','Error','Network error while deleting cookie: ' + (e && e.message ? e.message : e));
     }finally{
       forceUnpairBtn.disabled = false;
     }
