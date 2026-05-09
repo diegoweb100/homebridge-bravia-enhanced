@@ -133,6 +133,7 @@ If you use `externalaccessory: true`, after Homebridge restart:
 | `applications` | — | Array of `{title}` objects to include apps in the input list |
 | `soundoutput` | `speaker` | `speaker` or `headphone` |
 | `port` | `80` | HTTP port of the TV |
+| `psk` | — | Pre-Shared Key for authentication. If set, the plugin uses `X-Auth-PSK` header instead of PIN+cookie pairing. Required for some Bravia XR models (interface v6.x+). Set the same key on the TV: Settings > Network > IP control > Authentication > Pre-Shared Key. |
 | `serverPort` | `8999` | Port for the PIN entry / channel selector web server |
 | `channelSelectorPort` | same as `serverPort` | Override port for the channel selector UI |
 | `enableChannelSelector` | `true` | Controls only the Channel Selector UI page. The web server (needed for pairing) is always active, regardless of this option. |

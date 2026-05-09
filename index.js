@@ -182,8 +182,16 @@ class SonyTV {
     this.name = config.name;
     this.ip = config.ip;
     this.mac = config.mac || null;
-    this.woladdress = config.woladdress || '255.255.255.255';
+    // WOL broadcast address: if not explicitly configured, derive the directed broadcast
+    // from the TV's IP address by replacing the last octet with 255 (assumes /24 subnet,
+    // which covers the vast majority of home and SMB networks). This ensures WOL works
+    // across VLANs when the router has broadcast-forward enabled on the TV's interface,
+    // because the magic packet is sent as a routable unicast IP to the subnet broadcast
+    // address (e.g. 192.168.11.255) instead of the limited broadcast 255.255.255.255
+    // which never crosses router boundaries.
+    this.woladdress = config.woladdress || this._deriveDirectedBroadcast(config.ip);
     this.port = config.port || '80';
+    this.psk = config.psk || null;
     this.tvsource = config.tvsource || null;
     this.soundoutput = config.soundoutput || 'speaker';
     this.updaterate = config.updaterate || 5000;
@@ -525,6 +533,23 @@ class SonyTV {
       return s.length + 'chars ending with ...' + tail;
     }
     return s;
+  }
+
+  // Derive the directed broadcast address from a TV IP by replacing the last octet
+  // with 255. Assumes a /24 subnet, which is correct for the vast majority of home
+  // and SMB networks. If the IP is a hostname or cannot be parsed, falls back to
+  // the limited broadcast 255.255.255.255 (same-subnet only).
+  _deriveDirectedBroadcast(ip) {
+    if (!ip || typeof ip !== 'string') return '255.255.255.255';
+    var parts = ip.split('.');
+    if (parts.length !== 4) return '255.255.255.255';
+    // Validate that all four octets are numeric
+    for (var i = 0; i < 4; i++) {
+      var n = parseInt(parts[i], 10);
+      if (isNaN(n) || n < 0 || n > 255) return '255.255.255.255';
+    }
+    parts[3] = '255';
+    return parts.join('.');
   }
 
   // Print a formatted debug banner with a title and a list of "key: value" lines
@@ -954,6 +979,28 @@ class SonyTV {
   checkRegistration() {
     const self = this;
     if (this.debug) this.log('[' + this.name + '] checkRegistration() called');
+
+    // PSK mode: authentication is handled by the X-Auth-PSK header on every request.
+    // No cookie-based pairing (actRegister) is needed. Mark as authenticated and
+    // proceed directly to channel scanning.
+    if (!isNull(this.psk)) {
+      if (this.debug) this.log('[' + this.name + '] 🔑 PSK mode: skipping actRegister (authentication via X-Auth-PSK header)');
+      this.authok = true;
+      this.awaitingPin = false;
+      this.registercheck = true;
+
+      const _rIp     = getLocalIp();
+      const _rPort   = self.serverPort;
+      const _rIpBase = (_rIp ? 'http://' + _rIp : 'http://' + os.hostname()) + ':' + _rPort;
+      self.log('[' + self.name + '] ✓ PSK authentication active');
+      if (self.enableChannelSelector) {
+        self.log('[' + self.name + '] ✅ Channel Selector: ' + _rIpBase + '/');
+      }
+      self.probeSystemInfo();
+      self.receiveSources(true);
+      return;
+    }
+
     if (this.debug) this.log('[' + this.name + '] registercheck: ' + this.registercheck + ', authok: ' + this.authok);
     if (this.debug) this._logStateDump('checkRegistration entry');
 
@@ -2297,6 +2344,12 @@ class SonyTV {
     }
     if (!isNull(this.cookie)) {
       post_options.headers.Cookie = this.cookie; // = { 'Cookie': cookie };
+    }
+    // Pre-Shared Key authentication: newer Bravia XR models (interface v6.x+) may
+    // require PSK instead of cookie-based PIN pairing. When configured, the PSK is
+    // sent as an HTTP header on every request, bypassing actRegister entirely.
+    if (!isNull(this.psk)) {
+      post_options.headers['X-Auth-PSK'] = this.psk;
     }
     if (!isNull(this.pwd)) {
       var encpin = 'Basic ' + base64.encode(':' + this.pwd);

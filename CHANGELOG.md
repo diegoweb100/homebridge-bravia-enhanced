@@ -6,7 +6,17 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.7] - 2026-05-07
+## [1.4.8] - 2026-05-08
+
+### Added
+- **Pre-Shared Key (PSK) authentication** for Bravia XR and newer models (interface v6.x and above). When `psk` is set in the TV config, the plugin sends an `X-Auth-PSK` header on every HTTP request and skips the traditional `actRegister` PIN+cookie pairing entirely. This resolves the persistent `error [1] Internal Server Error` on models like the K-55XR8M2 (Bravia 8 II) where cookie-based pairing is no longer supported. To use: enable Pre-Shared Key on the TV (Settings > Network & Internet > IP control > Authentication), set a key, and add `"psk": "<your-key>"` to the TV config in Homebridge.
+
+### Changed
+- **WOL directed broadcast auto-detection.** When `woladdress` is not explicitly configured, the plugin now derives the directed broadcast address from the TV's IP by replacing the last octet with 255 (e.g. `192.168.11.14` becomes `192.168.11.255`). This makes WOL work across VLANs/subnets when the router has `broadcast-forward` enabled on the TV's interface, without requiring the user to manually calculate the broadcast address. Previously the default was `255.255.255.255` (limited broadcast), which never crosses router boundaries and silently fails in multi-VLAN setups. Users who had already set `woladdress` explicitly are not affected: their value takes precedence.
+
+---
+
+
 
 ### Fixed
 - **Homebridge logged `Failed to save cached accessories to disk: Cannot serialize accessory <name> - missing associated platform` after every reconcile cycle when the TV was configured with `externalaccessory: true`.** The plugin called `updatePlatformAccessories` on every change regardless of whether the accessory was external or platform-managed. External accessories live outside Homebridge's `cachedAccessories` file (they are published with `publishExternalAccessories` and recreated at every boot), so calling `updatePlatformAccessories` on them triggers a cache serialisation that has no platform record to attach to, producing the noisy error. The plugin now skips the platform-cache update for external accessories. Their state is already live on the running accessory and persisted via the existing `saveChannelsToFile` and on-disk context, so no change is lost.
