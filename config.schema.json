@@ -31,6 +31,12 @@
             "type": "number",
             "required": false
           },
+          "psk": {
+            "title": "Pre-Shared Key (PSK)",
+            "description": "If set, the plugin uses PSK authentication (X-Auth-PSK header) instead of PIN+cookie pairing. Required for some Bravia XR models (interface v6.x and above). Set the same key on the TV: Settings > Network > IP control > Authentication > Pre-Shared Key.",
+            "type": "string",
+            "required": false
+          },
           "serverPort": {
             "title": "PIN entry / Channel Selector server port",
             "placeholder": "8999",
@@ -141,6 +147,7 @@
         "tvs[].tvsource",
         "tvs[].soundoutput",
         "tvs[].port",
+        "tvs[].psk",
         "tvs[].mac",
         "tvs[].serverPort",
         "tvs[].channelSelectorPort",
