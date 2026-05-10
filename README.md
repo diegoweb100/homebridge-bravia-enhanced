@@ -27,6 +27,7 @@ HomeBridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **Full API version auto-detection (v1.3.0+)** — at boot the plugin probes every Sony endpoint via `getVersions` + `getMethodTypes` and uses the actual versions supported by your specific TV for every API call. This fixes pairing on newer Bravia XR models (e.g. K-55XR8M2) where `actRegister` v1.0 is no longer accepted.
 - **Web server always active (v1.3.0+)** — the web server is required for pairing and is now started unconditionally. The `enableChannelSelector` flag now only controls whether the Channel Selector UI page is exposed.
 - **Comprehensive debug output (v1.4.0+)** — set `debug: true` per TV in the config and the plugin will produce a complete, self-contained diagnostic dump on startup: environment hints (Docker / Synology / RPi auto-detection), sanitised config, storage paths with file sizes, full capabilities table, every HTTP request/response with body and latency, detailed pairing trace, WOL trace, and global handlers for uncaught exceptions. Sensitive values (PSK, PIN, cookies, MAC) are masked.
+- **Robust power-on with WOL burst and adaptive polling (v1.4.13+)** — power-on now sends a configurable burst of magic packets (5 × 500ms by default) instead of a single packet, then polls REST `getPowerStatus` every 2s for up to 15s to verify the TV actually came alive. A new `wolMode` option selects the WOL strategy (`auto`/unicast, `directed-broadcast`, or `disabled`). Status polling adapts automatically: 5s when the TV is on, 25s when it is in standby, and 2s temporarily during the post-wake window. Channel scans are deferred 3s after a wake-up to give the AV stack time to settle. Every step of the power-on flow is logged with a `[POWER]` prefix for easy log filtering.
 
 ---
 
@@ -141,8 +142,17 @@ If you use `externalaccessory: true`, after Homebridge restart:
 | `externalaccessory` | `false` | Publish TV as external accessory (needed for multiple TVs in Remote app) |
 | `hideDisconnectedInputs` | `false` | Automatically hide HDMI inputs that are physically disconnected |
 | `mac` | — | MAC address for Wake-on-LAN (only set if needed) |
-| `woladdress` | `255.255.255.255` | Subnet broadcast address for WOL |
-| `updaterate` | `5000` | Interval (ms) for TV power status polling |
+| `wolMode` | `auto` | WOL strategy used when REST `setPowerStatus` fails. `auto` sends a magic-packet burst as **unicast** to the TV's IP — works on most home networks and avoids broadcast noise. `directed-broadcast` sends the burst to the **subnet broadcast** (`woladdress`) — useful across VLANs when broadcast-forward is enabled. `disabled` skips WOL entirely (REST only). |
+| `woladdress` | `<TV-subnet>.255` | Subnet broadcast address used when `wolMode: "directed-broadcast"`. Ignored when `wolMode` is `auto` or `disabled`. |
+| `wolBurstCount` | `5` | Number of magic packets sent in a burst. Higher counts increase reliability on flaky networks at the cost of a slightly longer wake response. |
+| `wolBurstInterval` | `500` | Interval (ms) between magic packets in a burst. |
+| `wakeWaitMaxMs` | `15000` | Maximum time (ms) to wait for REST `getPowerStatus` to report `active` after a WOL burst. Used for verification logging only — the HomeKit callback is invoked earlier. |
+| `wakeWaitIntervalMs` | `2000` | Interval (ms) between alive-check polls during the wake-wait window. |
+| `postWakeScanDelay` | `3000` | Delay (ms) before the first channel scan after a wake-up, to let the TV's AV stack initialise before issuing content list queries. |
+| `standbyUpdateRate` | `25000` | Power-status polling interval (ms) while the TV is in standby. Slower than `updaterate` to reduce log noise and network traffic when nothing is happening. |
+| `postWakePollRate` | `2000` | Power-status polling interval (ms) used temporarily during the post-wake window to detect the TV becoming alive as quickly as possible. |
+| `postWakePollWindow` | `30000` | Duration (ms) of the post-wake polling window during which `postWakePollRate` is used. |
+| `updaterate` | `5000` | Interval (ms) for TV power status polling while the TV is on. |
 | `channelupdaterate` | `30000` | Interval (ms) for channel/input list refresh |
 | `volumeAccessory` | `false` | Publish a separate Lightbulb accessory to control volume (brightness) and mute (on/off) from HomeKit |
 | `volumeUI` | `false` | Show the TV's native volume slider overlay on screen when changing volume via HomeKit. Requires the TV to support `setAudioVolume` v1.2+. When `false`, volume changes are silent (no on-screen feedback). |

@@ -194,8 +194,52 @@ class SonyTV {
     this.psk = config.psk || null;
     this.tvsource = config.tvsource || null;
     this.soundoutput = config.soundoutput || 'speaker';
+    // Base polling interval when the TV is ON. Used as the "active" rate by the
+    // adaptive polling logic in updateStatus(). Default 5s.
     this.updaterate = config.updaterate || 5000;
     this.channelupdaterate = config.channelupdaterate === undefined ? 30000 : config.channelupdaterate;
+    // ── Adaptive polling (v1.4.13) ───────────────────────────────────────────
+    // Polling interval applied while the TV is in standby/off. Slower than
+    // updaterate to reduce log noise and network traffic when nothing is
+    // happening. Default 25s.
+    this.standbyUpdateRate = config.standbyUpdateRate || 25000;
+    // Aggressive polling interval used temporarily after a wake attempt to
+    // detect the TV becoming alive as quickly as possible. Default 2s.
+    this.postWakePollRate = config.postWakePollRate || 2000;
+    // Window (ms) during which postWakePollRate is used after a wake attempt.
+    // After this window expires the regular updaterate/standbyUpdateRate apply.
+    this.postWakePollWindow = config.postWakePollWindow || 30000;
+    // ── Power-on / WOL behaviour (v1.4.13) ───────────────────────────────────
+    // wolMode selects the WOL fallback strategy when REST setPowerStatus fails:
+    //   'auto'              REST first, then WOL burst sent as unicast to the TV's IP
+    //   'directed-broadcast' REST first, then WOL burst sent to the subnet broadcast (woladdress)
+    //   'disabled'          REST only, no WOL fallback even if a MAC is configured
+    // Defaults to 'auto'. Existing installations that explicitly set woladdress
+    // and want the previous behaviour should set wolMode: 'directed-broadcast'.
+    var _wolMode = (config.wolMode || 'auto').toString().toLowerCase();
+    if (_wolMode !== 'auto' && _wolMode !== 'directed-broadcast' && _wolMode !== 'disabled') {
+      this.log('[' + this.name + '] ⚠️  Invalid wolMode "' + _wolMode + '", falling back to "auto"');
+      _wolMode = 'auto';
+    }
+    this.wolMode = _wolMode;
+    // Number of magic packets sent in a burst and the interval between them.
+    // A burst is more reliable than a single packet on flaky networks (some
+    // TVs miss the first packet while NIC firmware is still booting up).
+    this.wolBurstCount = config.wolBurstCount || 5;
+    this.wolBurstInterval = config.wolBurstInterval || 500;
+    // After the WOL burst, poll getPowerStatus until the TV reports active or
+    // until this timeout expires. Used only for logging/verification, the
+    // HomeKit callback is invoked earlier so HomeKit doesn't time out.
+    this.wakeWaitMaxMs = config.wakeWaitMaxMs || 15000;
+    this.wakeWaitIntervalMs = config.wakeWaitIntervalMs || 2000;
+    // Delay applied before the first channel scan after a wake-up. Channel
+    // queries may fail if issued too soon after the TV becomes alive while
+    // the AV stack is still initialising.
+    this.postWakeScanDelay = config.postWakeScanDelay || 3000;
+    // Timestamp of the last wake event (set when setPowerState(true) is invoked
+    // or when getPowerState detects an OFF→ON transition). Drives both the
+    // adaptive polling window and the post-wake scan delay.
+    this.recentlyWokenAt = 0;
     this.starttimeout = config.starttimeout || 5000;
     this.comp = config.compatibilitymode;
     this.serverPort = config.serverPort || 8999;
@@ -553,6 +597,161 @@ class SonyTV {
     return parts.join('.');
   }
 
+  // ── v1.4.13: WOL burst helper ────────────────────────────────────────────
+  // Sends `wolBurstCount` magic packets at `wolBurstInterval` ms intervals.
+  // Returns immediately and invokes `done(errArr)` after the last packet,
+  // where `errArr` is an array of any send errors (empty on full success).
+  // The destination address is chosen by `wolMode`:
+  //   - 'auto'              → unicast to the TV's IP
+  //   - 'directed-broadcast' → woladdress (subnet broadcast)
+  // Caller must check that wolMode !== 'disabled' and that a MAC is configured.
+  _sendWolBurst(done) {
+    var that = this;
+    if (isNull(that.mac)) {
+      if (typeof done === 'function') done([new Error('no MAC configured')]);
+      return;
+    }
+    var dest = (that.wolMode === 'directed-broadcast')
+      ? (that.woladdress || '255.255.255.255')
+      : that.ip; // 'auto' uses unicast to the TV's IP
+    var count = that.wolBurstCount;
+    var interval = that.wolBurstInterval;
+    var errors = [];
+    var idx = 0;
+
+    that.log('[' + that.name + '] [POWER] ⚡ WOL burst: sending ' + count + ' magic packets to mac=' + that._sanitize(that.mac, 'mac') + ' dest=' + dest + ' (mode=' + that.wolMode + ', interval=' + interval + 'ms)');
+
+    var sendNext = function () {
+      if (idx >= count) {
+        if (errors.length === 0) {
+          that.log('[' + that.name + '] [POWER] ✓ WOL burst complete: ' + count + '/' + count + ' packets sent');
+        } else {
+          that.log('[' + that.name + '] [POWER] ⚠️  WOL burst complete with errors: ' + (count - errors.length) + '/' + count + ' packets sent, ' + errors.length + ' failed');
+        }
+        if (typeof done === 'function') done(errors);
+        return;
+      }
+      idx++;
+      var packetIdx = idx;
+      try {
+        wol.wake(that.mac, { address: dest }, function (err) {
+          if (err) {
+            errors.push(err);
+            if (that.debug) that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' FAILED: ' + err);
+          } else {
+            if (that.debug) that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' sent to ' + dest);
+          }
+          if (packetIdx >= count) {
+            sendNext();
+          } else {
+            setTimeout(sendNext, interval);
+          }
+        });
+      } catch (e) {
+        errors.push(e);
+        if (that.debug) that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' threw: ' + e);
+        if (packetIdx >= count) {
+          sendNext();
+        } else {
+          setTimeout(sendNext, interval);
+        }
+      }
+    };
+
+    sendNext();
+  }
+
+  // ── v1.4.13: Wait for REST alive ─────────────────────────────────────────
+  // Polls getPowerStatus every `wakeWaitIntervalMs` until the TV reports
+  // status=active or until `wakeWaitMaxMs` elapses. Used purely for logging
+  // verification of WOL effectiveness — the HomeKit callback is invoked
+  // earlier (after the WOL burst completes) to avoid HomeKit timeouts.
+  // `done(alive, elapsedMs)` is invoked once at the end.
+  _waitForRestAlive(done) {
+    var that = this;
+    var startedAt = Date.now();
+    var attempt = 0;
+    var maxMs = that.wakeWaitMaxMs;
+    var intervalMs = that.wakeWaitIntervalMs;
+
+    that.log('[' + that.name + '] [POWER] 👀 Waiting for REST alive (poll every ' + intervalMs + 'ms, timeout ' + maxMs + 'ms)');
+
+    var tick = function () {
+      attempt++;
+      var elapsed = Date.now() - startedAt;
+      if (elapsed >= maxMs) {
+        that.log('[' + that.name + '] [POWER] ⏱️  REST alive wait timed out after ' + elapsed + 'ms (' + attempt + ' attempts), TV did not become alive');
+        if (typeof done === 'function') done(false, elapsed);
+        return;
+      }
+
+      var getPowerStatusVersion = that.getApiVersion('getPowerStatus', '1.0');
+      var post_data = '{"id":2,"method":"getPowerStatus","version":"' + getPowerStatusVersion + '","params":[]}';
+
+      var onErr = function (err) {
+        if (that.debug) that.log('[' + that.name + '] [POWER] alive-check #' + attempt + ' (t+' + elapsed + 'ms) ERROR: ' + err);
+        if (Date.now() - startedAt + intervalMs >= maxMs) {
+          // No time for another attempt
+          var finalElapsed = Date.now() - startedAt;
+          that.log('[' + that.name + '] [POWER] ⏱️  REST alive wait timed out after ' + finalElapsed + 'ms (' + attempt + ' attempts)');
+          if (typeof done === 'function') done(false, finalElapsed);
+          return;
+        }
+        setTimeout(tick, intervalMs);
+      };
+
+      var onOk = function (chunk) {
+        try {
+          var j = JSON.parse(chunk);
+          var alive = !isNull(j) && !isNull(j.result) && !isNull(j.result[0]) && j.result[0].status === 'active';
+          if (alive) {
+            var t = Date.now() - startedAt;
+            that.log('[' + that.name + '] [POWER] ✅ REST alive after ' + t + 'ms (' + attempt + ' attempts)');
+            // Mirror the alive state into HomeKit immediately so the regular
+            // polling loop doesn't have to wait for its next tick.
+            that.updatePowerState(true);
+            if (typeof done === 'function') done(true, t);
+            return;
+          }
+          if (that.debug) that.log('[' + that.name + '] [POWER] alive-check #' + attempt + ' (t+' + (Date.now() - startedAt) + 'ms): not active yet');
+          if (Date.now() - startedAt + intervalMs >= maxMs) {
+            var finalElapsed = Date.now() - startedAt;
+            that.log('[' + that.name + '] [POWER] ⏱️  REST alive wait timed out after ' + finalElapsed + 'ms (' + attempt + ' attempts)');
+            if (typeof done === 'function') done(false, finalElapsed);
+            return;
+          }
+          setTimeout(tick, intervalMs);
+        } catch (e) {
+          onErr('parse error: ' + e);
+        }
+      };
+
+      try {
+        that.makeHttpRequest(onErr, onOk, '/sony/system/', post_data, false);
+      } catch (e) {
+        onErr('throw: ' + e);
+      }
+    };
+
+    setTimeout(tick, intervalMs);
+  }
+
+  // ── v1.4.13: Adaptive polling interval ───────────────────────────────────
+  // Returns the polling interval to use for the next updateStatus() tick:
+  //   - postWakePollRate (default 2s) inside the postWakePollWindow after a
+  //     wake event, while the TV is still detected as OFF
+  //   - updaterate (default 5s) when the TV is ON
+  //   - standbyUpdateRate (default 25s) when the TV is OFF and no recent wake
+  _currentPollInterval() {
+    if (this.recentlyWokenAt) {
+      var sinceWake = Date.now() - this.recentlyWokenAt;
+      if (sinceWake < this.postWakePollWindow && !this.power) {
+        return this.postWakePollRate;
+      }
+    }
+    return this.power ? this.updaterate : this.standbyUpdateRate;
+  }
+
   // Print a formatted debug banner with a title and a list of "key: value" lines
   _debugBanner(title, lines) {
     if (!this.debug) return;
@@ -625,8 +824,11 @@ class SonyTV {
       'hideDisconnectedInputs: ' + (this.hideDisconnectedInputs === true),
       'maxInputSources: ' + this.maxInputSources,
       'updaterate: ' + this.updaterate + 'ms | channelupdaterate: ' + this.channelupdaterate + 'ms',
+      'standbyUpdateRate: ' + this.standbyUpdateRate + 'ms | postWakePollRate: ' + this.postWakePollRate + 'ms | postWakePollWindow: ' + this.postWakePollWindow + 'ms',
+      'wolMode: ' + this.wolMode + ' | wolBurstCount: ' + this.wolBurstCount + ' | wolBurstInterval: ' + this.wolBurstInterval + 'ms',
+      'wakeWaitMaxMs: ' + this.wakeWaitMaxMs + ' | wakeWaitIntervalMs: ' + this.wakeWaitIntervalMs + ' | postWakeScanDelay: ' + this.postWakeScanDelay + 'ms',
       'mac: ' + this._sanitize(this.mac, 'mac'),
-      'woladdress: ' + (this.woladdress || '<default>'),
+      'woladdress: ' + (this.woladdress || '<default>') + ' (used only when wolMode=directed-broadcast)',
       'psk: ' + this._sanitize(this.psk, 'psk'),
       'applications: ' + (this.applications ? this.applications.length + ' configured' : '<none>'),
       'sources: ' + (this.sources ? this.sources.join(', ') : '<defaults>')
@@ -969,13 +1171,15 @@ class SonyTV {
 
   updateStatus() {
     var that = this;
-    if (this.debug) this.log('[' + this.name + '] Polling status, next in ' + this.updaterate + 'ms');
+    // v1.4.13: adaptive polling — fast post-wake, slower in standby, normal when ON
+    var interval = that._currentPollInterval();
+    if (this.debug) this.log('[' + this.name + '] Polling status, next in ' + interval + 'ms (power=' + this.power + ', sinceWake=' + (this.recentlyWokenAt ? (Date.now() - this.recentlyWokenAt) + 'ms' : 'n/a') + ')');
     setTimeout(function () {
       that.getPowerState(null);
       that.pollPlayContent();
       that.pollExternalInputsStatus();
       that.updateStatus();
-    }, this.updaterate);
+    }, interval);
   }
   // Check if we already registered with the TV and authenticate if needed
   checkRegistration() {
@@ -1459,6 +1663,22 @@ class SonyTV {
     if (checkPower === null)
       checkPower = this.power;
     if (this.debug) this.log('[' + this.name + '] checkPower=' + checkPower);
+
+    // v1.4.13: if the TV woke up very recently, defer the scan briefly to let
+    // the AV stack initialise (channel queries can fail otherwise). The natural
+    // channelupdaterate reschedule still runs on top of this, but we add a
+    // one-shot deferred call so we don't have to wait the full cycle.
+    if (checkPower && this.recentlyWokenAt) {
+      var sinceWake = Date.now() - this.recentlyWokenAt;
+      if (sinceWake < this.postWakeScanDelay) {
+        var wait = this.postWakeScanDelay - sinceWake + 100;
+        this.log('[' + this.name + '] [POWER] Deferring channel scan by ' + wait + 'ms (TV woke ' + sinceWake + 'ms ago, postWakeScanDelay=' + this.postWakeScanDelay + 'ms)');
+        var thatDefer = this;
+        setTimeout(function () { thatDefer.receiveSources(checkPower); }, wait);
+        return;
+      }
+    }
+
     if (!this.receivingSources && checkPower) {
       this.log('[' + this.name + '] Starting channel scan...');
       const that = this;
@@ -2178,58 +2398,88 @@ class SonyTV {
 
     if (state) {
       // ── POWER ON ──────────────────────────────────────────────────────────
-      // Strategy: try REST setPowerStatus first (works when the TV's network
-      // interface is alive in standby). If REST fails or returns an error
-      // (e.g. error 15 "power on not supported" on older Bravia, or
-      // EHOSTUNREACH when the NIC is fully off in deep sleep), fall back to
-      // WOL if a MAC address is configured.
+      // Strategy (v1.4.13):
+      //   1. Try REST setPowerStatus first (works when the TV's NIC is alive in
+      //      WiFi/standby). If the TV accepts it, we're done.
+      //   2. On REST failure, fall back to a WOL burst (5 packets at 500ms by
+      //      default) targeted according to wolMode:
+      //         'auto'              → unicast to the TV's IP
+      //         'directed-broadcast' → subnet broadcast (woladdress)
+      //         'disabled'          → no WOL, REST only
+      //   3. After the burst, run a parallel REST alive poll (every 2s up to
+      //      15s) for verification/logging — the HomeKit callback is invoked
+      //      right after the burst so HomeKit doesn't time out.
+      //   4. Set recentlyWokenAt so adaptive polling speeds up and the next
+      //      channel scan is deferred by postWakeScanDelay (default 3s).
       //
       // This covers every known scenario:
       //   - TV in WiFi standby (NIC alive, no WoWLAN): REST works, WOL doesn't
-      //   - TV in deep sleep (NIC off): REST fails, WOL wakes via broadcast
-      //   - TV with error 15 (old Bravia, REST can't power on): WOL fallback
-      //   - TV without MAC configured: REST only (no WOL possible)
+      //   - TV in deep sleep (NIC off): REST fails, WOL wakes via burst
+      //   - TV with REST error 15 (older Bravia): WOL fallback
+      //   - TV without MAC configured / wolMode=disabled: REST only
+
+      // Mark wake event up-front so adaptive polling kicks in immediately,
+      // even before REST or WOL completes.
+      that.recentlyWokenAt = Date.now();
+
       var setPowerOnVersion = that.getApiVersion('setPowerStatus', '1.0');
       var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOnVersion + '","params":[{"status":true}]}';
 
-      var onRestError = function (err) {
-        if (that.debug) that.log('[' + that.name + '] REST power-on failed: ' + err);
-        if (!isNull(that.mac)) {
-          if (that.debug) that.log('[' + that.name + '] ⚡ Falling back to WOL, mac=' + that._sanitize(that.mac, 'mac') + ' broadcast=' + (that.woladdress || '255.255.255.255'));
-          wol.wake(that.mac, {address: that.woladdress}, function (wolErr) {
-            if (wolErr) {
-              that.log('[' + that.name + '] ERROR sending WOL: ' + wolErr);
-              if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: failed to send magic packet to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
-            } else {
-              if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: magic packet sent successfully to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
-            }
-            invokeCallback();
-          });
-        } else {
-          if (that.debug) that.log('[' + that.name + '] No MAC configured, cannot fall back to WOL');
+      var doWolFallback = function (reason) {
+        if (that.wolMode === 'disabled') {
+          that.log('[' + that.name + '] [POWER] ✗ REST failed (' + reason + ') and wolMode=disabled, giving up');
           invokeCallback();
+          return;
         }
+        if (isNull(that.mac)) {
+          that.log('[' + that.name + '] [POWER] ✗ REST failed (' + reason + ') and no MAC configured, cannot fall back to WOL');
+          invokeCallback();
+          return;
+        }
+        that.log('[' + that.name + '] [POWER] ↻ REST failed (' + reason + '), falling back to WOL burst');
+        that._sendWolBurst(function (errors) {
+          // Invoke HomeKit callback right after the burst completes (typical
+          // total: wolBurstCount * wolBurstInterval ≈ 2.5s). The alive poll
+          // runs in parallel and just logs the result.
+          invokeCallback();
+          if (errors.length === that.wolBurstCount) {
+            that.log('[' + that.name + '] [POWER] ✗ WOL burst failed entirely, skipping alive wait');
+            return;
+          }
+          that._waitForRestAlive(function (alive, elapsedMs) {
+            if (alive) {
+              // Refresh recentlyWokenAt so post-wake scan delay is measured
+              // from the moment the TV actually came alive.
+              that.recentlyWokenAt = Date.now();
+            }
+          });
+        });
+      };
+
+      var onRestError = function (err) {
+        doWolFallback('transport error: ' + err);
       };
 
       var onRestSuccess = function (chunk) {
-        // Check if the TV returned an error in the JSON body (e.g. error 15 "power on not supported")
+        // The TV may return JSON with an error field even on HTTP 200 (e.g. error 15).
         try {
           var _json = JSON.parse(chunk);
           if (_json.error) {
-            if (that.debug) that.log('[' + that.name + '] REST power-on returned error: ' + JSON.stringify(_json.error));
-            onRestError('TV returned error ' + (_json.error[0] || '') + ': ' + (_json.error[1] || ''));
+            doWolFallback('TV returned error ' + (_json.error[0] || '') + ': ' + (_json.error[1] || ''));
             return;
           }
         } catch (e) {
-          // Not valid JSON, treat as error
-          onRestError('Invalid response: ' + chunk);
+          doWolFallback('invalid response body: ' + chunk);
           return;
         }
-        if (that.debug) that.log('[' + that.name + '] ✓ REST power-on accepted');
+        that.log('[' + that.name + '] [POWER] ✓ REST setPowerStatus accepted (TV was reachable)');
+        // REST already confirmed the TV accepted the command, so it's alive.
+        // Update HomeKit state immediately rather than waiting for the next poll.
+        that.updatePowerState(true);
         invokeCallback();
       };
 
-      if (that.debug) that.log('[' + that.name + '] Powering on: trying REST setPowerStatus first');
+      that.log('[' + that.name + '] [POWER] → Powering ON: trying REST setPowerStatus first (wolMode=' + that.wolMode + ', mac=' + (that.mac ? 'configured' : 'none') + ')');
       that.makeHttpRequest(onRestError, onRestSuccess, '/sony/system/', post_data, false);
 
     } else {
@@ -2279,6 +2529,13 @@ class SonyTV {
   updatePowerState(state) {
     if (this.power != state) {
       this.log('[' + this.name + '] Power: ' + this.power + ' -> ' + state);
+      // v1.4.13: track external OFF→ON transitions (e.g. TV powered on via the
+      // physical remote, not via HomeKit) so the post-wake scan delay applies
+      // and adaptive polling has a fresh reference point.
+      if (state === true && this.power === false) {
+        this.recentlyWokenAt = Date.now();
+        if (this.debug) this.log('[' + this.name + '] [POWER] OFF→ON transition detected, recentlyWokenAt=now');
+      }
       this.power = state;
       this.tvService.getCharacteristic(Characteristic.Active).updateValue(this.power);
       // Sync volume accessory on/off state with TV power

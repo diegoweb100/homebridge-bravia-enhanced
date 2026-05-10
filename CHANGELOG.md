@@ -6,6 +6,25 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.13] - 2026-05-10
+
+### Added
+- **WOL burst on power-on.** Power-on now sends 5 magic packets at 500 ms intervals (configurable via `wolBurstCount` and `wolBurstInterval`) instead of a single packet. A burst is significantly more reliable than a single packet on flaky or congested networks, and on TVs whose NIC firmware is still booting when the first packet arrives.
+- **REST alive verification after WOL.** After the WOL burst, the plugin polls REST `getPowerStatus` every 2 s for up to 15 s (`wakeWaitIntervalMs` / `wakeWaitMaxMs`) and logs precisely when the TV came alive (or timed out). The HomeKit callback is invoked right after the burst completes so HomeKit does not time out — the alive poll runs in parallel for diagnostic purposes only.
+- **`wolMode` configuration option.** Selects the WOL strategy when REST `setPowerStatus` fails. `auto` (default) sends the burst as **unicast** to the TV's IP — works on most home networks and avoids broadcast noise. `directed-broadcast` sends the burst to the subnet broadcast address (`woladdress`) — the previous default behaviour, useful across VLANs when broadcast-forward is enabled. `disabled` skips WOL entirely. Selectable from the Homebridge UI plugin settings.
+- **Post-wake channel-scan delay.** The first channel scan after a wake-up is now deferred by 3 s (`postWakeScanDelay`) to give the TV's AV stack time to initialise before content list queries are issued. Without the delay, the first scan after a cold wake could fail and force a full 30 s wait until the next cycle.
+- **Adaptive status polling.** The power-status polling interval now adapts to the TV state: 5 s when the TV is on (`updaterate`, unchanged), 25 s when the TV is in standby (`standbyUpdateRate`), and 2 s temporarily for 30 s after a wake attempt (`postWakePollRate` / `postWakePollWindow`). This cuts log noise and network traffic during long standby periods while still detecting the TV becoming alive within seconds of a wake.
+- **Structured `[POWER]` log prefix.** Every step of the power-on flow (REST attempt, REST result, WOL fallback decision, individual burst packets, alive poll, alive detected/timeout, scan defer) is logged with a `[POWER]` prefix for easy filtering with `grep`.
+
+### Changed
+- **External OFF→ON transitions are now also tracked.** When the TV is turned on with the physical remote (not via HomeKit), the plugin still records the wake event so the post-wake scan delay applies and adaptive polling has a fresh reference point.
+- **Default WOL destination changed for new installs.** With `wolMode: "auto"` (the new default), the WOL burst is sent as unicast to the TV's IP instead of the subnet directed broadcast. Existing installations that explicitly set `woladdress` and rely on broadcast delivery should set `wolMode: "directed-broadcast"` to keep the previous behaviour.
+
+### Notes
+- All new tunables (`wolBurstCount`, `wolBurstInterval`, `wakeWaitMaxMs`, `wakeWaitIntervalMs`, `postWakeScanDelay`, `standbyUpdateRate`, `postWakePollRate`, `postWakePollWindow`) default to the values described above and only need to be set in the config when overriding them. Only `wolMode` is exposed in the Homebridge UI to keep the settings page compact.
+
+---
+
 ## [1.4.12] - 2026-05-10
 
 ### Fixed
