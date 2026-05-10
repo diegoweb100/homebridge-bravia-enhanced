@@ -6,14 +6,26 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.11] - 2026-05-10
+## [1.4.12] - 2026-05-10
+
+### Fixed
+- **Power on/off now uses REST first with WOL as fallback, instead of being mutually exclusive.** Previously the plugin used ONLY WOL if a MAC address was configured, or ONLY REST if it was not. This failed on WiFi-connected TVs (e.g. KD-43XF7596) where WOL doesn't work but REST `setPowerStatus` works perfectly, and on older Bravia (e.g. KD-55X9005B) where REST returns error 15 but WOL works. The new strategy tries REST `setPowerStatus` first; if it fails or returns an error, falls back to WOL if a MAC is configured. Power off follows the same pattern: REST first, IRCC command as fallback. This covers every known combination of TV model and standby mode.
+
+### Added
+- **`volumeUI` configuration option.** Controls whether the TV shows its native volume slider overlay on screen when changing volume via HomeKit. Defaults to `false` (silent volume changes). Set to `true` to see the OSD feedback. Requires `setAudioVolume` v1.2+ (auto-detected). Available in the Homebridge UI plugin settings.
+
+---
+
+
 
 ### Fixed
 - **Channel scan when TV is off removed all channels as "stale".** If the TV was powered off (or became unreachable) during a periodic rescan cycle, the scan returned zero channels. The plugin then compared zero scanned channels against the existing HomeKit channel list and removed every registered channel as "stale", corrupting the user's selection. The plugin now skips the entire reconcile step when the scan returns zero channels but channels are already registered, preserving the existing list until the next successful scan.
 - **Volume/Mute read handlers could hang indefinitely, causing Homebridge to log "read handler didn't respond at all".** The underlying `http.request` had no timeout, so if the TV was slow to respond (e.g. waking from standby) or the TCP connection was half-open, the callback was never invoked. All HTTP requests now have an 8-second safety timeout. If the TV does not respond within that window, the request is aborted and the error callback is invoked, so Homebridge always gets a timely response and the accessory stays responsive.
+- **Power on/off now uses REST first with WOL as fallback, instead of being mutually exclusive.** Previously the plugin used ONLY WOL if a MAC address was configured, or ONLY REST if it was not. This failed on TVs where WOL does not work (e.g. WiFi-connected TVs without WoWLAN support like KD-43XF7596) even though REST `setPowerStatus` worked perfectly. The new strategy tries REST `setPowerStatus` first (works whenever the TV's network interface is alive in standby); if REST fails or returns an error (e.g. error 15 "power on not supported" on older Bravia, or EHOSTUNREACH when the NIC is off in deep sleep), the plugin falls back to WOL if a MAC is configured. Power off follows the same pattern: REST first, IRCC command as fallback. This covers every known combination of TV model and standby mode.
 
 ### Added
 - **"Request PIN from TV" button in the Pairing web UI.** Previously, triggering a new PIN prompt on the TV required restarting Homebridge. The pairing page now has a dedicated button that sends `actRegister` to the TV on demand, causing the TV to display a PIN without restarting Homebridge. The button is visible whenever the TV is not yet paired.
+- **`volumeUI` configuration option.** Controls whether the TV shows its native volume slider overlay on screen when changing volume via HomeKit. Defaults to `false` (silent volume changes). Set to `true` to see the OSD feedback. Requires `setAudioVolume` v1.2+ (auto-detected by the plugin; older TVs that only support v1.0 always show the OSD regardless of this setting).
 
 ---
 

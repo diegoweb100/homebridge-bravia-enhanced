@@ -209,6 +209,7 @@ class SonyTV {
     this.enableChannelSelector = config.enableChannelSelector !== false;
     this.selectedChannelsPath = STORAGE_PATH + '/selected-channels-' + this.name + '.json';
     this.volumeAccessory = config.volumeAccessory === true;
+    this.volumeUI = config.volumeUI === true;
     this.volumeAccessoryInstance = null; // will hold the Lightbulb accessory if enabled
     this.fullScanCachePath = STORAGE_PATH + '/sonytv-fullscan-' + this.name + '.json';
     this.capabilitiesPath = STORAGE_PATH + '/sonytv-capabilities-' + this.name + '.json';
@@ -620,6 +621,7 @@ class SonyTV {
       'tvsource: ' + (this.tvsource || '<none>'),
       'externalaccessory: ' + (this.externalaccessory === true),
       'volumeAccessory: ' + this.volumeAccessory,
+      'volumeUI: ' + this.volumeUI,
       'hideDisconnectedInputs: ' + (this.hideDisconnectedInputs === true),
       'maxInputSources: ' + this.maxInputSources,
       'updaterate: ' + this.updaterate + 'ms | channelupdaterate: ' + this.channelupdaterate + 'ms',
@@ -2094,13 +2096,14 @@ class SonyTV {
         callback(null);
       return;
     }
-    // setAudioVolume v1.2 supports the "ui" parameter to suppress on-screen feedback.
-    // Build the params object based on the version actually supported by the TV.
-    // Use a numeric comparison so future versions (e.g. v1.10) are handled correctly.
+    // setAudioVolume v1.2 supports the "ui" parameter to control the on-screen volume
+    // overlay. When "ui":"on" the TV shows the native volume slider on screen; when
+    // "ui":"off" the volume changes silently. Configurable via config.volumeUI (default: false).
     var setAudioVolumeVersion = that.getApiVersion('setAudioVolume', '1.0');
     var setAudioVolumeParams;
     if (compareVersions(setAudioVolumeVersion, '1.2') >= 0) {
-      setAudioVolumeParams = '{"target":"' + that.soundoutput + '","volume":"' + volume + '","ui":"off"}';
+      var uiFlag = that.volumeUI ? 'on' : 'off';
+      setAudioVolumeParams = '{"target":"' + that.soundoutput + '","volume":"' + volume + '","ui":"' + uiFlag + '"}';
     } else {
       setAudioVolumeParams = '{"target":"' + that.soundoutput + '","volume":"' + volume + '"}';
     }
@@ -2165,44 +2168,111 @@ class SonyTV {
   // homebridge callback to set power state
   setPowerState(state, callback) {
     var that = this;
-    var onError = function (err) {
-      if (that.debug)
-        if (that.debug) that.log('[' + that.name + '] ERROR (power set): ' + err);
-      if (!isNull(callback))
+    var callbackCalled = false;
+    var invokeCallback = function () {
+      if (!callbackCalled && !isNull(callback)) {
+        callbackCalled = true;
         callback(null);
-    };
-    var onSucces = function (chunk) {
-      if (!isNull(callback))
-        callback(null);
-    };
-    var onWol = function (error) {
-      if (error) {
-        that.log('[' + that.name + '] ERROR sending WOL:', error);
-        if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: failed to send magic packet to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
-      } else {
-        if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: magic packet sent successfully to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
       }
-      if (!isNull(callback))
-        callback(null);
     };
+
     if (state) {
-      if (!isNull(this.mac)) {
-        if (this.debug) this.log('[' + this.name + '] ⚡ WOL TRACE: powering on via WOL, mac=' + this._sanitize(this.mac, 'mac') + ' broadcast=' + (this.woladdress || '255.255.255.255'));
-        wol.wake(this.mac, {address: this.woladdress}, onWol);
-      } else {
-        var setPowerOnVersion = that.getApiVersion('setPowerStatus', '1.0');
-        var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOnVersion + '","params":[{"status":true}]}';
-        that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
-      }
+      // ── POWER ON ──────────────────────────────────────────────────────────
+      // Strategy: try REST setPowerStatus first (works when the TV's network
+      // interface is alive in standby). If REST fails or returns an error
+      // (e.g. error 15 "power on not supported" on older Bravia, or
+      // EHOSTUNREACH when the NIC is fully off in deep sleep), fall back to
+      // WOL if a MAC address is configured.
+      //
+      // This covers every known scenario:
+      //   - TV in WiFi standby (NIC alive, no WoWLAN): REST works, WOL doesn't
+      //   - TV in deep sleep (NIC off): REST fails, WOL wakes via broadcast
+      //   - TV with error 15 (old Bravia, REST can't power on): WOL fallback
+      //   - TV without MAC configured: REST only (no WOL possible)
+      var setPowerOnVersion = that.getApiVersion('setPowerStatus', '1.0');
+      var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOnVersion + '","params":[{"status":true}]}';
+
+      var onRestError = function (err) {
+        if (that.debug) that.log('[' + that.name + '] REST power-on failed: ' + err);
+        if (!isNull(that.mac)) {
+          if (that.debug) that.log('[' + that.name + '] ⚡ Falling back to WOL, mac=' + that._sanitize(that.mac, 'mac') + ' broadcast=' + (that.woladdress || '255.255.255.255'));
+          wol.wake(that.mac, {address: that.woladdress}, function (wolErr) {
+            if (wolErr) {
+              that.log('[' + that.name + '] ERROR sending WOL: ' + wolErr);
+              if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: failed to send magic packet to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
+            } else {
+              if (that.debug) that.log('[' + that.name + '] ⚡ WOL TRACE: magic packet sent successfully to ' + that._sanitize(that.mac, 'mac') + ' via ' + (that.woladdress || '255.255.255.255'));
+            }
+            invokeCallback();
+          });
+        } else {
+          if (that.debug) that.log('[' + that.name + '] No MAC configured, cannot fall back to WOL');
+          invokeCallback();
+        }
+      };
+
+      var onRestSuccess = function (chunk) {
+        // Check if the TV returned an error in the JSON body (e.g. error 15 "power on not supported")
+        try {
+          var _json = JSON.parse(chunk);
+          if (_json.error) {
+            if (that.debug) that.log('[' + that.name + '] REST power-on returned error: ' + JSON.stringify(_json.error));
+            onRestError('TV returned error ' + (_json.error[0] || '') + ': ' + (_json.error[1] || ''));
+            return;
+          }
+        } catch (e) {
+          // Not valid JSON, treat as error
+          onRestError('Invalid response: ' + chunk);
+          return;
+        }
+        if (that.debug) that.log('[' + that.name + '] ✓ REST power-on accepted');
+        invokeCallback();
+      };
+
+      if (that.debug) that.log('[' + that.name + '] Powering on: trying REST setPowerStatus first');
+      that.makeHttpRequest(onRestError, onRestSuccess, '/sony/system/', post_data, false);
+
     } else {
-      if (!isNull(this.mac)) {
-        var post_data = this.createIRCC('AAAAAQAAAAEAAAAvAw==');
-        this.makeHttpRequest(onError, onSucces, '', post_data, false);
-      } else {
-        var setPowerOffVersion = that.getApiVersion('setPowerStatus', '1.0');
-        var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOffVersion + '","params":[{"status":false}]}';
-        that.makeHttpRequest(onError, onSucces, '/sony/system/', post_data, false);
-      }
+      // ── POWER OFF ─────────────────────────────────────────────────────────
+      // Use REST setPowerStatus(false) as the primary method. IRCC power-off
+      // was previously used when MAC was configured, but setPowerStatus(false)
+      // is cleaner and works on all TVs that accept REST commands (the TV is
+      // always reachable when it's on). IRCC is kept as fallback only if REST
+      // returns an error.
+      var onOffError = function (err) {
+        if (that.debug) that.log('[' + that.name + '] REST power-off failed: ' + err);
+        // Fallback: try IRCC power toggle
+        if (that.debug) that.log('[' + that.name + '] Falling back to IRCC power-off');
+        var ircc_data = that.createIRCC('AAAAAQAAAAEAAAAvAw==');
+        that.makeHttpRequest(
+          function (irccErr) {
+            if (that.debug) that.log('[' + that.name + '] IRCC power-off also failed: ' + irccErr);
+            invokeCallback();
+          },
+          function () { invokeCallback(); },
+          '', ircc_data, false
+        );
+      };
+
+      var onOffSuccess = function (chunk) {
+        try {
+          var _json = JSON.parse(chunk);
+          if (_json.error) {
+            if (that.debug) that.log('[' + that.name + '] REST power-off returned error: ' + JSON.stringify(_json.error));
+            onOffError('TV returned error ' + (_json.error[0] || '') + ': ' + (_json.error[1] || ''));
+            return;
+          }
+        } catch (e) {
+          // Non-JSON is fine for power-off (some TVs return empty)
+        }
+        if (that.debug) that.log('[' + that.name + '] ✓ REST power-off accepted');
+        invokeCallback();
+      };
+
+      var setPowerOffVersion = that.getApiVersion('setPowerStatus', '1.0');
+      var off_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOffVersion + '","params":[{"status":false}]}';
+      if (that.debug) that.log('[' + that.name + '] Powering off: trying REST setPowerStatus first');
+      that.makeHttpRequest(onOffError, onOffSuccess, '/sony/system/', off_data, false);
     }
   }
   // Sends the current power state to HomeKit

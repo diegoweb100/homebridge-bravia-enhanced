@@ -145,6 +145,7 @@ If you use `externalaccessory: true`, after Homebridge restart:
 | `updaterate` | `5000` | Interval (ms) for TV power status polling |
 | `channelupdaterate` | `30000` | Interval (ms) for channel/input list refresh |
 | `volumeAccessory` | `false` | Publish a separate Lightbulb accessory to control volume (brightness) and mute (on/off) from HomeKit |
+| `volumeUI` | `false` | Show the TV's native volume slider overlay on screen when changing volume via HomeKit. Requires the TV to support `setAudioVolume` v1.2+. When `false`, volume changes are silent (no on-screen feedback). |
 | `debug` | `false` | Enable verbose debug logging for this TV |
 
 ---

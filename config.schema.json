@@ -81,6 +81,12 @@
             "type": "boolean",
             "required": false
           },
+          "volumeUI": {
+            "title": "Volume On-Screen Display",
+            "description": "Show the TV's native volume slider overlay on screen when changing volume via HomeKit. Requires setAudioVolume v1.2+. Defaults to false (silent volume changes).",
+            "type": "boolean",
+            "required": false
+          },
           "debug": {
             "title": "Debug Log Output",
             "description": "Gives additional debug output in the log",
@@ -155,6 +161,7 @@
         "tvs[].maxInputSources",
         "tvs[].externalaccessory",
         "tvs[].volumeAccessory",
+        "tvs[].volumeUI",
         "tvs[].debug",
         {
           "key": "tvs[].applications",
