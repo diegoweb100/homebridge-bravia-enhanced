@@ -6,7 +6,14 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.8] - 2026-05-08
+## [1.4.10] - 2026-05-09
+
+### Fixed
+- **Channel scan failed on Bravia XR (interface v6.x) with `error [3, "Illegal Argument"]` on all sources.** The TV reports `getContentList` v1.5 as its highest supported version, and the plugin correctly used v1.5, but the v1.5 schema uses `"uri"` as the parameter name instead of `"source"` (which is the v1.0/v1.2 name). The plugin now constructs the correct parameter name based on the detected API version: `"source"` for v1.0-v1.2 and `"uri"` for v1.5+, following the official Sony REST API specification. The v1.5 payload also includes the explicit `"cnt": 50` parameter as documented.
+
+---
+
+
 
 ### Added
 - **Pre-Shared Key (PSK) authentication** for Bravia XR and newer models (interface v6.x and above). When `psk` is set in the TV config, the plugin sends an `X-Auth-PSK` header on every HTTP request and skips the traditional `actRegister` PIN+cookie pairing entirely. This resolves the persistent `error [1] Internal Server Error` on models like the K-55XR8M2 (Bravia 8 II) where cookie-based pairing is no longer supported. To use: enable Pre-Shared Key on the TV (Settings > Network & Internet > IP control > Authentication), set a key, and add `"psk": "<your-key>"` to the TV config in Homebridge.

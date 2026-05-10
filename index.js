@@ -1539,7 +1539,18 @@ class SonyTV {
       that.receiveNextSources();
     };
     var getContentListVersion = that.getApiVersion('getContentList', '1.0');
-    var post_data = '{"id":13,"method":"getContentList","version":"' + getContentListVersion + '","params":[{ "source":"' + sourceName + '","stIdx": ' + startIndex + '}]}';
+    // Sony getContentList API changed the parameter name across versions:
+    //   v1.0 - v1.2: { "source": "<uri>", "stIdx": N }
+    //   v1.5+:       { "uri": "<uri>", "stIdx": N, "cnt": 50 }
+    // The v1.5 schema also supports an explicit "cnt" (max items per response,
+    // device-specific limit, max 200). We include it for v1.5+ to be explicit.
+    var sourceParam;
+    if (compareVersions(getContentListVersion, '1.5') >= 0) {
+      sourceParam = '{ "uri":"' + sourceName + '","stIdx": ' + startIndex + ',"cnt": 50}';
+    } else {
+      sourceParam = '{ "source":"' + sourceName + '","stIdx": ' + startIndex + '}';
+    }
+    var post_data = '{"id":13,"method":"getContentList","version":"' + getContentListVersion + '","params":[' + sourceParam + ']}';
     if (that.debug) that.log('[' + that.name + '] API request: ' + post_data);
     that.makeHttpRequest(onError, onSucces, '/sony/avContent', post_data, false);
   }
