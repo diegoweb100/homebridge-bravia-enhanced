@@ -6,7 +6,18 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
-## [1.4.10] - 2026-05-09
+## [1.4.11] - 2026-05-10
+
+### Fixed
+- **Channel scan when TV is off removed all channels as "stale".** If the TV was powered off (or became unreachable) during a periodic rescan cycle, the scan returned zero channels. The plugin then compared zero scanned channels against the existing HomeKit channel list and removed every registered channel as "stale", corrupting the user's selection. The plugin now skips the entire reconcile step when the scan returns zero channels but channels are already registered, preserving the existing list until the next successful scan.
+- **Volume/Mute read handlers could hang indefinitely, causing Homebridge to log "read handler didn't respond at all".** The underlying `http.request` had no timeout, so if the TV was slow to respond (e.g. waking from standby) or the TCP connection was half-open, the callback was never invoked. All HTTP requests now have an 8-second safety timeout. If the TV does not respond within that window, the request is aborted and the error callback is invoked, so Homebridge always gets a timely response and the accessory stays responsive.
+
+### Added
+- **"Request PIN from TV" button in the Pairing web UI.** Previously, triggering a new PIN prompt on the TV required restarting Homebridge. The pairing page now has a dedicated button that sends `actRegister` to the TV on demand, causing the TV to display a PIN without restarting Homebridge. The button is visible whenever the TV is not yet paired.
+
+---
+
+
 
 ### Fixed
 - **Channel scan failed on Bravia XR (interface v6.x) with `error [3, "Illegal Argument"]` on all sources.** The TV reports `getContentList` v1.5 as its highest supported version, and the plugin correctly used v1.5, but the v1.5 schema uses `"uri"` as the parameter name instead of `"source"` (which is the v1.0/v1.2 name). The plugin now constructs the correct parameter name based on the detected API version: `"source"` for v1.0-v1.2 and `"uri"` for v1.5+, following the official Sony REST API specification. The v1.5 payload also includes the explicit `"cnt": 50` parameter as documented.

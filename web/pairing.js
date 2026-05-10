@@ -160,9 +160,36 @@
     }
   }
 
+  async function requestPin(){
+    const requestPinBtn = document.getElementById('request-pin-btn');
+    if (requestPinBtn) requestPinBtn.disabled = true;
+    try{
+      const r = await fetch(`/api/request-pin?tv=${encodeURIComponent(tv)}`,{
+        method:'POST'
+      });
+      const ctype = (r.headers && r.headers.get) ? (r.headers.get('content-type') || '') : '';
+      if (ctype.indexOf('application/json') === -1) {
+        showToast('error','Server error','Plugin may need to be updated to v1.4.11 or later.');
+        return;
+      }
+      const data = await r.json();
+      if (data.success){
+        showToast('success','PIN requested', data.message || 'Check your TV screen for the PIN.');
+      } else {
+        showToast('error','Error', data.message || 'Could not request PIN');
+      }
+    }catch(e){
+      showToast('error','Error','Network error: ' + (e && e.message ? e.message : e));
+    }finally{
+      if (requestPinBtn) requestPinBtn.disabled = false;
+    }
+  }
+
   submitBtn.addEventListener('click', submitPin);
   pinInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitPin(); });
   forceUnpairBtn.addEventListener('click', forceUnpair);
+  const requestPinBtn = document.getElementById('request-pin-btn');
+  if (requestPinBtn) requestPinBtn.addEventListener('click', requestPin);
 
   refreshStatus();
   loadDeviceInfo();

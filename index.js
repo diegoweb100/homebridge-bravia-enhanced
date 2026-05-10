@@ -1293,6 +1293,15 @@ class SonyTV {
     if (this.debug) this.log('[' + this.name + '] scannedChannels count: ' + this.scannedChannels.length);
     if (this.debug) this.log('[' + this.name + '] channelServices count: ' + this.channelServices.length);
     if (this.debug) this.log('[' + this.name + '] inputSourceMap size: ' + this.inputSourceMap.size);
+
+    // Guard: if the scan returned zero channels but we already have channels registered,
+    // the TV was almost certainly off or unreachable during the scan. Proceeding would
+    // remove every channel as "stale" and corrupt the user's selection. Skip the entire
+    // reconcile and keep the existing channel list.
+    if (this.scannedChannels.length === 0 && this.channelServices.length > 0) {
+      if (this.debug) this.log('[' + this.name + '] ⚠️  Scan returned 0 channels but ' + this.channelServices.length + ' are registered — skipping reconcile (TV likely off)');
+      return;
+    }
     
     var changeDone = false;
     
@@ -2261,6 +2270,7 @@ class SonyTV {
     try {
       var post_options = that.getPostOptions(url);
       var post_req = http.request(post_options, function (res) {
+        post_req.__responded = true;
         that.setCookie(res.headers);
         res.setEncoding('utf8');
         res.on('data', function (chunk) {
@@ -2319,6 +2329,22 @@ class SonyTV {
       });
       post_req.write(post_data);
       post_req.end();
+
+      // Safety timeout: if the TV does not respond within 8 seconds (connect + response),
+      // abort the request and invoke the error callback. Without this, a hung connection
+      // (TV in deep sleep, half-open TCP, network glitch) causes the callback to never fire,
+      // which makes Homebridge log "read handler didn't respond at all" and marks the
+      // accessory as unresponsive. 8 seconds is generous enough for slow TVs (typical
+      // response is 5-200ms) while still being well under Homebridge's 10-second HAP timeout.
+      post_req.setTimeout(8000, function () {
+        if (!post_req.__responded) {
+          if (that.debug) that.log('[' + that.name + '] ✖ HTTP timeout (8s) on ' + url + ' [' + debugMethodInfo + ']');
+          post_req.destroy();
+          if (!isNull(errcallback)) {
+            errcallback(new Error('HTTP timeout after 8000ms'));
+          }
+        }
+      });
     } catch (e) {
       that.log('[' + that.name + '] HTTP exception: ' + e);
       if (!isNull(errcallback)) {
@@ -2519,6 +2545,28 @@ const pinRequired = !paired;
         }
         res.writeHead(200, {'Content-Type': 'application/json'});
         res.end(JSON.stringify({ success: true, data: self.getDeviceInfo() }));
+        return;
+      }
+
+      // Request a new PIN from the TV without restarting Homebridge.
+      // Sends actRegister without cookie/auth, which causes the TV to display
+      // a PIN on screen. The user then enters the PIN in the pairing UI.
+      if (pathname === '/api/request-pin' && req.method === 'POST') {
+        const tv = urlObject.query.tv;
+        if (isNull(tv) || tv !== self.name) {
+          self.sendJSON(res, { success: false, message: 'Missing or invalid tv parameter' });
+          return;
+        }
+        // Clear existing auth state so actRegister triggers a fresh PIN prompt
+        self.cookie = '';
+        self.authok = false;
+        self.registercheck = false;
+        self.awaitingPin = true;
+        self.pwd = null;
+        self.log('[' + self.name + '] PIN request triggered from web UI');
+        // Send actRegister to TV — this will cause the TV to show a PIN popup
+        self.checkRegistration();
+        self.sendJSON(res, { success: true, message: 'PIN requested. Check your TV screen.' });
         return;
       }
 
