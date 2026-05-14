@@ -279,7 +279,15 @@ class SonyTV {
       // avContent
       'getContentList': '/sony/avContent',
       'getCurrentExternalInputsStatus': '/sony/avContent',
-      'getApplicationList': '/sony/avContent',
+      // v1.4.14: getApplicationList lives on /sony/appControl, not on
+      // /sony/avContent. The actual HTTP call in receiveApplications()
+      // correctly targets /sony/appControl, but the methodEndpoints map
+      // pointed to /sony/avContent. As a result probeApiVersions() looked for
+      // getApplicationList in avContent's getMethodTypes responses, never
+      // found it (it is not advertised there), and getApiVersion() always
+      // fell back to the default v1.0. Harmless on most TVs but blocked any
+      // future auto-downgrade for this method and is simply the wrong mapping.
+      'getApplicationList': '/sony/appControl',
       'getPlayingContentInfo': '/sony/avContent',
       'setPlayContent': '/sony/avContent',
       'setActiveApp': '/sony/avContent',
@@ -1692,6 +1700,22 @@ class SonyTV {
 
       this.receivingSources = true;
       this.scannedChannels = [];
+      // v1.4.14: reset appsLoaded at the start of every scan cycle so apps are
+      // re-fetched on every refresh, not just on the very first boot scan.
+      // Without this reset, appsLoaded stayed latched to true after the first
+      // successful scan, the gate in receiveNextSources() would skip
+      // receiveApplications() on cycles 2 to N, and scannedChannels would not
+      // contain any apps. The reconcile step would then remove every app from
+      // HomeKit because they were no longer present in scannedChannels, even
+      // though the user had them in config and selected via the Channel
+      // Selector UI. The on-disk selection survived (it is a separate file),
+      // which produced the puzzling symptom of apps still being marked as
+      // selected in the UI but missing from HomeKit.
+      // (Fixes GitHub issue #4: apps removed after every rescan.)
+      // When useApps is false (no applications configured), appsLoaded is
+      // initialised to true so the gate skips the app fetch step entirely,
+      // matching the original constructor logic.
+      this.appsLoaded = !this.useApps;
       this.receiveNextSources();
     } else {
       if (this.debug) this.log('[' + this.name + '] Skipping scan — receivingSources=' + this.receivingSources + ', checkPower=' + checkPower);

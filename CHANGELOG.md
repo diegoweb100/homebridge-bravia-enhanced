@@ -6,6 +6,14 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.14] - 2026-05-14
+
+### Fixed
+- **Apps removed after every rescan (issue [#4](https://github.com/diegoweb100/homebridge-bravia-enhanced/issues/4)).** The internal `appsLoaded` flag was set to `true` after the first successful scan at boot and never reset for subsequent scan cycles. As a result, on every scan from cycle 2 onwards `receiveApplications()` was skipped, `scannedChannels` did not contain any apps, and the reconcile step removed every app from HomeKit because they were no longer present in the scan results. The on-disk selection file survived (it is separate), which produced the puzzling symptom of apps still being marked as selected in the Channel Selector UI but missing from HomeKit. Fix: `appsLoaded` is now reset to `!this.useApps` at the start of every `receiveSources()` call, so apps are re-fetched on every refresh cycle. When `applications` is not configured the behaviour is unchanged (gate still skips the app fetch).
+- **`getApplicationList` endpoint mismatch in capabilities map.** The `methodEndpoints` table registered `getApplicationList` as `/sony/avContent`, but the actual HTTP call in `receiveApplications()` correctly used `/sony/appControl`. The mismatch was harmless on most TVs (the v1.0 default was always used) but it meant the capability probe never recorded a real version for this method and any future auto-downgrade logic could not fire for it. Corrected to `/sony/appControl`.
+
+---
+
 ## [1.4.13] - 2026-05-10
 
 ### Added
