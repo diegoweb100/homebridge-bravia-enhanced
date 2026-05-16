@@ -216,10 +216,30 @@ class SonyTV {
     //   'disabled'          REST only, no WOL fallback even if a MAC is configured
     // Defaults to 'auto'. Existing installations that explicitly set woladdress
     // and want the previous behaviour should set wolMode: 'directed-broadcast'.
-    var _wolMode = (config.wolMode || 'auto').toString().toLowerCase();
-    if (_wolMode !== 'auto' && _wolMode !== 'directed-broadcast' && _wolMode !== 'disabled') {
-      this.log('[' + this.name + '] ⚠️  Invalid wolMode "' + _wolMode + '", falling back to "auto"');
-      _wolMode = 'auto';
+    //
+    // v1.4.15 back-compat: if the user explicitly set woladdress in config but
+    // did not set wolMode, default to 'directed-broadcast'. In v1.4.12 and
+    // earlier the plugin always sent WOL to woladdress (subnet broadcast by
+    // default), so users who relied on that behaviour and had woladdress
+    // configured would otherwise silently switch to unicast on upgrade and
+    // their cross-VLAN setups would stop working.
+    var _wolModeRaw = config.wolMode;
+    var _woladdressExplicit = !isNull(config.woladdress) && config.woladdress !== '';
+    var _wolMode;
+    if (isNull(_wolModeRaw) || _wolModeRaw === '') {
+      // wolMode not set in config — pick default
+      if (_woladdressExplicit) {
+        _wolMode = 'directed-broadcast';
+        this.log('[' + this.name + '] ⚙️  wolMode not set but woladdress is configured (' + config.woladdress + ') — defaulting wolMode to "directed-broadcast" for backward compatibility with v1.4.12 and earlier. Set wolMode explicitly to silence this notice.');
+      } else {
+        _wolMode = 'auto';
+      }
+    } else {
+      _wolMode = _wolModeRaw.toString().toLowerCase();
+      if (_wolMode !== 'auto' && _wolMode !== 'directed-broadcast' && _wolMode !== 'disabled') {
+        this.log('[' + this.name + '] ⚠️  Invalid wolMode "' + _wolMode + '", falling back to "auto"');
+        _wolMode = 'auto';
+      }
     }
     this.wolMode = _wolMode;
     // Number of magic packets sent in a burst and the interval between them.
@@ -279,7 +299,7 @@ class SonyTV {
       // avContent
       'getContentList': '/sony/avContent',
       'getCurrentExternalInputsStatus': '/sony/avContent',
-      // v1.4.14: getApplicationList lives on /sony/appControl, not on
+      // v1.4.15: getApplicationList lives on /sony/appControl, not on
       // /sony/avContent. The actual HTTP call in receiveApplications()
       // correctly targets /sony/appControl, but the methodEndpoints map
       // pointed to /sony/avContent. As a result probeApiVersions() looked for
@@ -627,7 +647,8 @@ class SonyTV {
     var errors = [];
     var idx = 0;
 
-    that.log('[' + that.name + '] [POWER] ⚡ WOL burst: sending ' + count + ' magic packets to mac=' + that._sanitize(that.mac, 'mac') + ' dest=' + dest + ' (mode=' + that.wolMode + ', interval=' + interval + 'ms)');
+    var destLabel = (that.wolMode === 'directed-broadcast') ? 'subnet broadcast' : 'unicast to TV';
+    that.log('[' + that.name + '] [POWER] ⚡ WOL burst: sending ' + count + ' magic packets to mac=' + that._sanitize(that.mac, 'mac') + ' dest=' + dest + ' [' + destLabel + '] (mode=' + that.wolMode + ', interval=' + interval + 'ms)');
 
     var sendNext = function () {
       if (idx >= count) {
@@ -836,7 +857,7 @@ class SonyTV {
       'wolMode: ' + this.wolMode + ' | wolBurstCount: ' + this.wolBurstCount + ' | wolBurstInterval: ' + this.wolBurstInterval + 'ms',
       'wakeWaitMaxMs: ' + this.wakeWaitMaxMs + ' | wakeWaitIntervalMs: ' + this.wakeWaitIntervalMs + ' | postWakeScanDelay: ' + this.postWakeScanDelay + 'ms',
       'mac: ' + this._sanitize(this.mac, 'mac'),
-      'woladdress: ' + (this.woladdress || '<default>') + ' (used only when wolMode=directed-broadcast)',
+      'woladdress: ' + (this.woladdress || '<default>') + ' (used when wolMode=directed-broadcast; auto-promotes to that mode if set without explicit wolMode)',
       'psk: ' + this._sanitize(this.psk, 'psk'),
       'applications: ' + (this.applications ? this.applications.length + ' configured' : '<none>'),
       'sources: ' + (this.sources ? this.sources.join(', ') : '<defaults>')
@@ -1700,7 +1721,7 @@ class SonyTV {
 
       this.receivingSources = true;
       this.scannedChannels = [];
-      // v1.4.14: reset appsLoaded at the start of every scan cycle so apps are
+      // v1.4.15: reset appsLoaded at the start of every scan cycle so apps are
       // re-fetched on every refresh, not just on the very first boot scan.
       // Without this reset, appsLoaded stayed latched to true after the first
       // successful scan, the gate in receiveNextSources() would skip
@@ -1712,9 +1733,6 @@ class SonyTV {
       // which produced the puzzling symptom of apps still being marked as
       // selected in the UI but missing from HomeKit.
       // (Fixes GitHub issue #4: apps removed after every rescan.)
-      // When useApps is false (no applications configured), appsLoaded is
-      // initialised to true so the gate skips the app fetch step entirely,
-      // matching the original constructor logic.
       this.appsLoaded = !this.useApps;
       this.receiveNextSources();
     } else {

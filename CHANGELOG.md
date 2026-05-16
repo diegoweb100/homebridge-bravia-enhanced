@@ -6,6 +6,18 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.15] - 2026-05-14
+
+### Fixed
+- **Cross-VLAN WOL silently broken by v1.4.13 default change (regression).** v1.4.13 introduced `wolMode` with the new default `'auto'`, which sends the WOL burst as **unicast to the TV's IP** instead of to `woladdress` (subnet broadcast) as v1.4.12 and earlier did. Users with the TV on a different VLAN from the Homebridge host, who relied on directed broadcast via `woladdress` (explicit or auto-derived), saw their WOL fail after upgrade because unicast WOL requires the gateway to resolve ARP for the TV's IP and a fully-off TV does not answer ARP, so the gateway drops the packet. Fix: when `woladdress` is explicitly configured in `config.json` but `wolMode` is not, the plugin now defaults `wolMode` to `'directed-broadcast'` for backward compatibility with v1.4.12 and earlier, and logs a notice so the user knows the auto-promotion happened. Users who explicitly set `wolMode` to any value (including `'auto'`) get the v1.4.13 behaviour with no promotion. No config changes are required for the back-compat case.
+- **`[POWER]` WOL burst log now indicates whether the destination is `unicast to TV` or `subnet broadcast`**, making it immediately obvious in the log when the destination is the wrong one for a given network topology. Example: `[POWER] ⚡ WOL burst: ... dest=192.168.11.14 [unicast to TV] (mode=auto, ...)` versus `dest=192.168.11.255 [subnet broadcast] (mode=directed-broadcast, ...)`.
+
+### Notes
+- Users on the same VLAN as the TV are unaffected by this fix in either direction. The regression and the back-compat promotion only matter when the host running Homebridge is on a different subnet from the TV.
+- This release also includes the two fixes shipped in v1.4.14 (apps removed after every rescan, `getApplicationList` endpoint mismatch in capabilities map). See entries below.
+
+---
+
 ## [1.4.14] - 2026-05-14
 
 ### Fixed
