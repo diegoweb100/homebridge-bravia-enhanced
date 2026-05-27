@@ -242,6 +242,20 @@ class SonyTV {
       }
     }
     this.wolMode = _wolMode;
+    // v1.4.16: sanity-check woladdress when directed-broadcast is in effect.
+    // A common misconfiguration is setting woladdress to the TV's own IP
+    // (e.g. 192.168.11.14) instead of the subnet broadcast (192.168.11.255).
+    // In that case the magic packet is sent as a unicast to a TV that is off,
+    // the gateway cannot resolve ARP for it, and WOL silently fails. We cannot
+    // know the netmask for sure, but a directed broadcast for the common /24
+    // case ends in .255; if it does not, warn so the user can spot the mistake.
+    if (this.wolMode === 'directed-broadcast' && !isNull(this.mac)) {
+      var _waParts = (this.woladdress || '').split('.');
+      if (_waParts.length === 4 && _waParts[3] !== '255') {
+        var _suggested = _waParts.slice(0, 3).join('.') + '.255';
+        this.log('[' + this.name + '] ⚠️  wolMode is "directed-broadcast" but woladdress (' + this.woladdress + ') does not look like a subnet broadcast (it does not end in .255). On a typical /24 network this should be ' + _suggested + '. If WOL is not waking the TV, set "woladdress": "' + _suggested + '" (or remove woladdress to let the plugin derive it from the TV IP).');
+      }
+    }
     // Number of magic packets sent in a burst and the interval between them.
     // A burst is more reliable than a single packet on flaky networks (some
     // TVs miss the first packet while NIC firmware is still booting up).
@@ -2638,8 +2652,40 @@ class SonyTV {
 
     try {
       var post_options = that.getPostOptions(url);
+      // v1.4.16: log outgoing headers with secrets masked. The missing
+      // Content-Type was the root cause of issue #2 (channel scan on Bravia XR)
+      // and would have been impossible to spot without this. We always log the
+      // header names; PSK and cookie values are replaced with their length so
+      // we can confirm presence without leaking the secret.
+      if (that.debug) {
+        var _hdrs = {};
+        Object.keys(post_options.headers || {}).forEach(function (k) {
+          var v = post_options.headers[k];
+          if (/^x-auth-psk$/i.test(k) || /^authorization$/i.test(k) || /^cookie$/i.test(k)) {
+            _hdrs[k] = '<set, ' + String(v).length + ' chars>';
+          } else {
+            _hdrs[k] = v;
+          }
+        });
+        that.log('[' + that.name + '] ▶ HDR (out): ' + JSON.stringify(_hdrs));
+      }
       var post_req = http.request(post_options, function (res) {
         post_req.__responded = true;
+        // v1.4.16: log incoming headers (cookie values masked). Reveals if the
+        // TV is setting cookies on PSK requests, returning unexpected
+        // Content-Type, or doing redirects.
+        if (that.debug) {
+          var _rhdrs = {};
+          Object.keys(res.headers || {}).forEach(function (k) {
+            var v = res.headers[k];
+            if (/cookie/i.test(k)) {
+              _rhdrs[k] = Array.isArray(v) ? v.map(function (s) { return '<set, ' + String(s).length + ' chars>'; }) : '<set, ' + String(v).length + ' chars>';
+            } else {
+              _rhdrs[k] = v;
+            }
+          });
+          that.log('[' + that.name + '] ◀ HDR (in): HTTP ' + res.statusCode + ' ' + JSON.stringify(_rhdrs));
+        }
         that.setCookie(res.headers);
         res.setEncoding('utf8');
         res.on('data', function (chunk) {
@@ -2760,6 +2806,19 @@ class SonyTV {
     if (!isNull(this.pwd)) {
       var encpin = 'Basic ' + base64.encode(':' + this.pwd);
       post_options.headers.Authorization = encpin; // {':  encpin  };
+    }
+    // v1.4.16: send an explicit Content-Type for every JSON-RPC call to the
+    // Sony API. The plugin historically omitted this header; older Bravia
+    // firmwares are permissive and accept a body without Content-Type, but
+    // newer Bravia XR firmware (interface v6.x and above) requires the header
+    // explicitly. Without it, the TV accepts the connection and returns HTTP
+    // 200, but does not parse the JSON body, so methods like getContentList
+    // silently produce empty or error results (this matches Mamac-FR's report
+    // in issue #2: curl with the header works, plugin without it does not).
+    // The IRCC endpoint overrides Content-Type to text/xml below, so the
+    // default is applied only for JSON-RPC calls.
+    if (url != '/sony/IRCC' && !post_options.headers['Content-Type']) {
+      post_options.headers['Content-Type'] = 'application/json';
     }
     if (url == '/sony/IRCC') {
       post_options.headers['Content-Type'] = 'text/xml';

@@ -6,6 +6,23 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.16] - 2026-05-27
+
+### Fixed
+
+- **Channel scan returns 0 on Bravia XR / newer firmware (interface v6.x and above), even though one-off curl with the same payload works.** Reported in [issue #2](https://github.com/diegoweb100/homebridge-bravia-enhanced/issues/2) by @Mamac-FR. The plugin historically built its HTTP requests without an explicit `Content-Type` header. Older Bravia firmware (Android TV up to interface v5.x) is permissive and accepts a JSON body even without the header, but newer Bravia XR firmware requires `Content-Type: application/json` explicitly. Without it, the TV accepts the connection and returns HTTP 200, but the body is not parsed, so `getContentList` and similar methods silently produce empty results. The plugin now sends `Content-Type: application/json` by default on every JSON-RPC call (the IRCC endpoint still uses `text/xml`). Verified against the exact request format Marc tested manually with curl: same body, just the missing header was added.
+
+### Added
+
+- **Request and response header logging in debug mode.** When `debug: true`, the plugin now logs `▶ HDR (out)` with every outgoing request and `◀ HDR (in)` with every response. Sensitive header values (`X-Auth-PSK`, `Authorization`, `Cookie`, `Set-Cookie`) are replaced with `<set, N chars>` so presence is visible but the secret never leaks. This makes header-level issues (missing `Content-Type`, unexpected `Set-Cookie` from the TV, redirects) immediately diagnosable. Required to catch the issue above; the previous debug output only logged URL + body, hiding the actual root cause.
+- **`woladdress` sanity check.** When `wolMode` is `directed-broadcast` and `woladdress` does not end in `.255` (suggesting the user accidentally set the TV's own IP instead of the subnet broadcast), a warning is logged at startup with the suggested correct value for a `/24` network. WOL was silently failing in this case because the magic packet was being sent as a unicast to a TV that is off and cannot answer ARP.
+
+### Diagnostics
+
+- New helper script `bravia_freshlog.sh` (attached to issue #2) auto-discovers the persist directory, dumps the full negotiated API versions table, runs a live PSK probe against the configured TV showing response headers (so any Set-Cookie or auth oddity is visible), and captures a fresh log slice with auth-focused greps. Sensitive values (PSK, cookies, PIN) are masked so the output can be safely attached to a public issue.
+
+---
+
 ## [1.4.15] - 2026-05-14
 
 ### Fixed
