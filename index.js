@@ -2524,6 +2524,18 @@ class SonyTV {
             doWolFallback('TV returned error ' + (_json.error[0] || '') + ': ' + (_json.error[1] || ''));
             return;
           }
+          // v1.4.17: a TV that requires re-authentication answers setPowerStatus
+          // with HTTP 403 and a body like {"auth_url":{"default":"http://.../sony/webauth/..."}}.
+          // makeHttpRequest passes any body (including 403) to this success
+          // callback, and that body parses as valid JSON with no "error" field,
+          // so the previous code logged "REST accepted" and marked the TV ON
+          // without ever sending the WOL burst — the TV never actually turned on.
+          // Detect the auth_url marker and treat it as a REST failure so the WOL
+          // fallback runs (which is what actually wakes the TV in this case).
+          if (_json.auth_url) {
+            doWolFallback('TV requires re-authentication (HTTP 403 auth_url) — REST power-on rejected');
+            return;
+          }
         } catch (e) {
           doWolFallback('invalid response body: ' + chunk);
           return;
@@ -2712,6 +2724,15 @@ class SonyTV {
           // so a misbehaving method cannot cause an infinite retry loop.
           // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           const errCode = that._extractSonyErrorCode(data);
+          // v1.4.17: surface authentication failures. A 401/403 (often with an
+          // auth_url body) means the TV is refusing the request pending
+          // re-authentication; without this line it is easy to mistake the
+          // JSON body for a valid result. The body is still passed to the
+          // callback (callers like onRestSuccess now handle auth_url), but the
+          // warning makes the root cause obvious in the log.
+          if ((res.statusCode === 401 || res.statusCode === 403) && that.debug) {
+            that.log('[' + that.name + '] ⚠️  HTTP ' + res.statusCode + ' on ' + url + ' [' + debugMethodInfo + '] — TV refused the request (authentication required). Body: ' + (data.length > 200 ? data.slice(0, 200) + '...' : data));
+          }
           if (errCode === 12 && requestMethodName && requestMethodVersion && that.methodEndpoints[requestMethodName]) {
             const newVersion = that._downgradeApiVersion(requestMethodName);
             if (newVersion && newVersion !== requestMethodVersion) {

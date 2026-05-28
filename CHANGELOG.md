@@ -6,6 +6,18 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.17] - 2026-05-27
+
+### Fixed
+
+- **REST power-on falsely reported as successful when the TV returns HTTP 403 (auth required), so the TV never turned on.** When the stored authentication cookie is expired or missing, a Bravia answers `setPowerStatus` with HTTP 403 and a body like `{"auth_url":{"default":"http://<tv>/sony/webauth/auth_default"}}`. The plugin passed this body to its success handler, where it parsed as valid JSON with no `error` field, so the plugin logged `REST setPowerStatus accepted`, marked the TV ON, and skipped the Wake-on-LAN fallback entirely. The TV stayed off. The plugin now detects the `auth_url` marker (and logs a warning on any 401/403 response in debug mode) and treats it as a REST failure, so the WOL burst runs and actually wakes the TV. Surfaced thanks to the new HTTP header logging added in v1.4.16.
+
+### Note
+
+- A 403 `auth_url` response also indicates the TV pairing cookie has expired. WOL will still wake the TV, but to restore full REST control (volume, input switching while off, etc.) re-pair from the Pairing page (Delete cookie and force re-pairing), or switch to PSK authentication on newer models.
+
+---
+
 ## [1.4.16] - 2026-05-27
 
 ### Fixed
