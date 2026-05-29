@@ -6,6 +6,18 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.18] - 2026-05-29
+
+### Fixed
+
+- **Channel Selector could show `Scan complete. Found 0 channels` on a TV that actually returned channels.** The scan result was being overwritten by the saved HomeKit channel selection. If the saved selection contained stale/incompatible URIs, the full scan was filtered down to zero before `/api/scan` could return it to the web UI. The plugin now keeps the complete scan list separate from the HomeKit publication list: the full scan is always cached for Channel Selector, while only the selected subset is used for HomeKit reconciliation.
+- **Saved selections that match zero scanned channels no longer wipe HomeKit inputs.** When a stale selection file matches nothing but the TV returned real channels, the plugin preserves the currently published HomeKit inputs and logs a warning, so the user can reopen Channel Selector and save a fresh selection.
+- **Server-side HomeKit limit enforcement when saving selections.** The web UI already prevents selecting more than `maxInputSources`, but the API now rejects oversized save requests as well.
+
+### Changed
+
+- The Channel Selector scan toast now also shows the configured HomeKit maximum, making it clear that the web UI may list more channels than HomeKit can publish.
+
 ## [1.4.17] - 2026-05-27
 
 ### Fixed

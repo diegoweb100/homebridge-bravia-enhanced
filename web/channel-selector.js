@@ -1,9 +1,9 @@
 // Channel Selector JavaScript
-// VERSION: channel-selector.js v1.0.0 (homebridge-bravia-enhanced by diegoweb100)
+// VERSION: channel-selector.js v1.4.18 (homebridge-bravia-enhanced by diegoweb100)
 (function () {
   'use strict';
 
-  const VERSION = 'v1.0.0';
+  const VERSION = 'v1.4.18';
 
   // State
   const state = {
@@ -215,7 +215,7 @@
       showSection(el.channelListContainer, true);
       updateSaveButtonsVisibility();
 
-      toast('success', 'Scan complete', `Found ${state.channels.length} channels`);
+      toast('success', 'Scan complete', `Found ${state.channels.length} channels (HomeKit max ${state.maxChannels})`);
     } catch (e) {
       toast('error', 'Scan error', e.message || String(e));
       showSection(el.emptyState, true);

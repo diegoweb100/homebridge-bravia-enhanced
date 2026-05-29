@@ -1700,6 +1700,46 @@ class SonyTV {
       this._debugBanner('🔎 SCAN SUMMARY', lines);
     }
   }
+  // Finish a scan without losing the full channel list used by the web UI.
+  // HomeKit is reconciled with either the saved user selection or the configured cap,
+  // while the full scan cache keeps every TV/HDMI/app entry visible in Channel Selector.
+  finalizeChannelScan() {
+    const fullScannedChannels = Array.isArray(this.scannedChannels) ? this.scannedChannels.slice() : [];
+
+    if (fullScannedChannels.length > 0) {
+      this.saveFullScanCache(fullScannedChannels);
+    } else if (this.debug) {
+      this.log('[' + this.name + '] Full scan returned 0 channels; keeping any previous full-scan cache');
+    }
+
+    const selectedUris = this.getSelectedChannelUris();
+    let channelsForHomeKit = fullScannedChannels;
+
+    if (selectedUris && selectedUris.length > 0) {
+      const selectedChannels = this.getSelectedChannelsFromList(fullScannedChannels, selectedUris);
+
+      if (selectedChannels.length === 0 && fullScannedChannels.length > 0) {
+        this.log('[' + this.name + '] ⚠️  Saved channel selection matched 0/' + selectedUris.length + ' scanned channels; preserving current HomeKit inputs and keeping full scan for Channel Selector');
+        this.scannedChannels = fullScannedChannels;
+        this.receivingSources = false;
+        return;
+      }
+
+      channelsForHomeKit = selectedChannels;
+      this.log('[' + this.name + '] Applied channel selection for HomeKit: ' + channelsForHomeKit.length + ' channels (full scan: ' + fullScannedChannels.length + ')');
+    } else if (fullScannedChannels.length > this.maxInputSources) {
+      this.log('[' + this.name + '] Full scan found ' + fullScannedChannels.length + ' channels; HomeKit will publish at most ' + this.maxInputSources + ' input sources');
+    }
+
+    this.scannedChannels = channelsForHomeKit;
+    this.syncAccessory();
+
+    // syncAccessory uses this.scannedChannels as the HomeKit reconcile source.
+    // Restore the complete scan immediately afterwards so /api/scan and debug
+    // summaries do not report only the selected HomeKit subset.
+    this.scannedChannels = fullScannedChannels;
+  }
+
   // initialize a scan for new sources
   receiveSources(checkPower = null) {
     if (this.debug) this.log('[' + this.name + '] receiveSources checkPower=' + checkPower + ', this.power=' + this.power + ', this.receivingSources=' + this.receivingSources);
@@ -1766,13 +1806,7 @@ class SonyTV {
         this.receiveApplications();
       } else {
         if (this.debug) this.log('[' + this.name + '] Finalizing scan...');
-        // Persist full scan results for the web UI (unlimited list)
-        if (this.scannedChannels && this.scannedChannels.length > this.maxInputSources) {
-          this.saveFullScanCache(this.scannedChannels);
-        }
-        // If the user saved a selection, only publish those channels to HomeKit
-        this.applySelectionFilterToScannedChannels();
-        this.syncAccessory();
+        this.finalizeChannelScan();
       }
       return;
     }
@@ -1898,13 +1932,7 @@ class SonyTV {
       if (that.debug)
         that.log(err);
       that.appsLoaded = true;
-      // Persist full scan (channels + apps) for the web UI
-      if (that.scannedChannels && that.scannedChannels.length > that.maxInputSources) {
-        that.saveFullScanCache(that.scannedChannels);
-      }
-      // If the user saved a selection, only publish those channels to HomeKit
-      that.applySelectionFilterToScannedChannels();
-      that.syncAccessory();
+      that.finalizeChannelScan();
     };
     var onSucces = function (data) {
       try {
@@ -1939,13 +1967,7 @@ class SonyTV {
           if (that.debug) that.log(e);
       }
       that.appsLoaded = true;
-      // Persist full scan (channels + apps) for the web UI
-      if (that.scannedChannels && that.scannedChannels.length > that.maxInputSources) {
-        that.saveFullScanCache(that.scannedChannels);
-      }
-      // If the user saved a selection, only publish those channels to HomeKit
-      that.applySelectionFilterToScannedChannels();
-      that.syncAccessory();
+      that.finalizeChannelScan();
     };
     var getApplicationListVersion = that.getApiVersion('getApplicationList', '1.0');
     var post_data = '{"id":13,"method":"getApplicationList","version":"' + getApplicationListVersion + '","params":[]}';
@@ -3227,6 +3249,10 @@ const pinRequired = !paired;
         }
         
         const saveData = { tv: data.tv, channels: data.channels, savedAt: new Date().toISOString() };
+        if (data.channels.length > self.maxInputSources) {
+          return self.sendJSON(res, { success: false, error: 'Too many channels selected: ' + data.channels.length + '/' + self.maxInputSources });
+        }
+
         fs.writeFileSync(self.selectedChannelsPath, JSON.stringify(saveData, null, 2));
 
         // Respond immediately so the browser UI doesn't hang if syncAccessory is slow or throws.
@@ -3353,21 +3379,17 @@ const pinRequired = !paired;
     return [];
   }
 
-  // If a selection exists, filter a scanned channel list to ONLY the user-selected ones.
-  // Keeps the selection order if possible.
-  applySelectionFilterToScannedChannels() {
-    const selectedUris = this.getSelectedChannelUris();
-    if (!selectedUris || selectedUris.length === 0) {
-      return;
+  // Return only the channels selected by the user, preserving selection order.
+  // Exact URI matching is used first; legacy synthetic app URIs from <=1.4.5
+  // still fall back to title matching so old selections keep working.
+  getSelectedChannelsFromList(channels, selectedUris) {
+    if (!Array.isArray(channels) || !selectedUris || selectedUris.length === 0) {
+      return [];
     }
-    // Primary lookup: exact URI match
-    const byUri = new Map(this.scannedChannels.map(ch => [ch[1], ch]));
-    // Fallback lookup: title match (case-insensitive, trimmed). Used to recover
-    // selections saved with the legacy synthetic "appControl:<title>" URI from
-    // versions <= 1.4.5, where the web UI listed configured apps with a fake URI
-    // that never matched the real one returned by the TV (e.g. "preset://wifi-display").
+
+    const byUri = new Map(channels.map(ch => [ch[1], ch]));
     const norm = (s) => String(s || '').toLowerCase().trim();
-    const byTitle = new Map(this.scannedChannels.map(ch => [norm(ch[0]), ch]));
+    const byTitle = new Map(channels.map(ch => [norm(ch[0]), ch]));
 
     const filtered = [];
     selectedUris.forEach(uri => {
@@ -3381,7 +3403,17 @@ const pinRequired = !paired;
       }
       if (ch) filtered.push(ch);
     });
-    // If some selected URIs weren't in the scan, keep what we have.
+
+    return filtered;
+  }
+
+  // Backward-compatible wrapper for older internal callers.
+  applySelectionFilterToScannedChannels() {
+    const selectedUris = this.getSelectedChannelUris();
+    if (!selectedUris || selectedUris.length === 0) {
+      return;
+    }
+    const filtered = this.getSelectedChannelsFromList(this.scannedChannels, selectedUris);
     this.scannedChannels = filtered;
     this.log('[' + this.name + '] Applied channel selection: ' + this.scannedChannels.length + ' channels');
   }
