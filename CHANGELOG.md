@@ -6,27 +6,32 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.19] - 2026-05-30
+
+### Fixed
+
+- **Phantom CEC input appearing in the Channel Selector and the polling log.** Reported by @Mamac-FR on K-55XR8M2 (Bravia 8 II, interface v6.3.0) in [#2](https://github.com/diegoweb100/homebridge-bravia-enhanced/issues/2). On newer Bravia XR firmware, `getContentList` for `extInput:cec` includes a stub row for the TV's own CEC logical address (typically `port=-1`, empty title, `logicalAddr=4` which Sony assigns to the TV itself as `Playback Device 1`). This entry cannot be selected as an input and provides no useful information, but the Channel Selector web UI displayed it as a raw URI (`extInput:cec?port=-1&type=player&logicalAddr=4`) with no title, and the input-status polling loop logged it every 5 seconds. The plugin now silently filters out CEC entries that have a negative `port` value or an empty title in both the scan path (`receiveSource`) and the live status polling (`pollExternalInputsStatus`). HDMI inputs and regular CEC devices are unaffected: real CEC devices always have a positive port and a non-empty title.
+
+---
+
 ## [1.4.18] - 2026-05-29
 
 ### Fixed
 
-- **Channel Selector could show `Scan complete. Found 0 channels` on a TV that actually returned channels.** The scan result was being overwritten by the saved HomeKit channel selection. If the saved selection contained stale/incompatible URIs, the full scan was filtered down to zero before `/api/scan` could return it to the web UI. The plugin now keeps the complete scan list separate from the HomeKit publication list: the full scan is always cached for Channel Selector, while only the selected subset is used for HomeKit reconciliation.
-- **Saved selections that match zero scanned channels no longer wipe HomeKit inputs.** When a stale selection file matches nothing but the TV returned real channels, the plugin preserves the currently published HomeKit inputs and logs a warning, so the user can reopen Channel Selector and save a fresh selection.
-- **Server-side HomeKit limit enforcement when saving selections.** The web UI already prevents selecting more than `maxInputSources`, but the API now rejects oversized save requests as well.
+- **Channel selection silently wiped the full scan, causing the Channel Selector to show `Found 0 channels` after a successful Sony API response.** When the TV returned a fresh channel list but the saved selection file (`selected-channels-<TV>.json`) contained URIs that no longer matched (for example, a leftover `appControl:SmartTube` entry from a previous configuration), `applySelectionFilterToScannedChannels()` overwrote `this.scannedChannels` with the empty filtered list. The web UI then read that empty array and reported `Found 0 channels`, even though the TV had returned 30 channels plus HDMI/CEC inputs.
+- Rewrote the scan finalization into a new `finalizeChannelScan()` method that keeps the full scan and the HomeKit-published subset separated: the full list is always saved to `sonytv-fullscan-<TV>.json` for the web UI, and only the filtered subset is applied to HomeKit. If the saved selection matches 0 of N scanned channels, a warning is logged and the previous HomeKit inputs are preserved (no destructive wipe). After `syncAccessory()`, `this.scannedChannels` is restored to the complete scan so `/api/scan` and debug summaries always see the full list.
 
-### Changed
-
-- The Channel Selector scan toast now also shows the configured HomeKit maximum, making it clear that the web UI may list more channels than HomeKit can publish.
+---
 
 ## [1.4.17] - 2026-05-27
 
 ### Fixed
 
-- **REST power-on falsely reported as successful when the TV returns HTTP 403 (auth required), so the TV never turned on.** When the stored authentication cookie is expired or missing, a Bravia answers `setPowerStatus` with HTTP 403 and a body like `{"auth_url":{"default":"http://<tv>/sony/webauth/auth_default"}}`. The plugin passed this body to its success handler, where it parsed as valid JSON with no `error` field, so the plugin logged `REST setPowerStatus accepted`, marked the TV ON, and skipped the Wake-on-LAN fallback entirely. The TV stayed off. The plugin now detects the `auth_url` marker (and logs a warning on any 401/403 response in debug mode) and treats it as a REST failure, so the WOL burst runs and actually wakes the TV. Surfaced thanks to the new HTTP header logging added in v1.4.16.
+- **REST power-on falsely reported as successful when the TV returned HTTP 403 with `auth_url`, so the TV never actually turned on.** When the stored pairing cookie is expired or missing, a Bravia answers `setPowerStatus` with HTTP 403 and a body like `{"auth_url":{"default":"http://<tv>/sony/webauth/auth_default"}}`. The plugin passed this body to its success handler, where it parsed as valid JSON with no `error` field, so the plugin logged `REST setPowerStatus accepted`, marked the TV ON, and skipped the Wake-on-LAN fallback. The TV stayed off. The plugin now detects the `auth_url` marker and treats it as a REST failure, so the WOL burst runs and actually wakes the TV. A warning is also logged on any 401/403 response in debug mode.
 
 ### Note
 
-- A 403 `auth_url` response also indicates the TV pairing cookie has expired. WOL will still wake the TV, but to restore full REST control (volume, input switching while off, etc.) re-pair from the Pairing page (Delete cookie and force re-pairing), or switch to PSK authentication on newer models.
+- A 403 `auth_url` response also means the TV pairing cookie has expired. WOL will still wake the TV, but to restore full REST control re-pair from the Pairing page (Delete cookie and force re-pairing), or switch to PSK authentication on newer models.
 
 ---
 
@@ -34,16 +39,16 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ### Fixed
 
-- **Channel scan returns 0 on Bravia XR / newer firmware (interface v6.x and above), even though one-off curl with the same payload works.** Reported in [issue #2](https://github.com/diegoweb100/homebridge-bravia-enhanced/issues/2) by @Mamac-FR. The plugin historically built its HTTP requests without an explicit `Content-Type` header. Older Bravia firmware (Android TV up to interface v5.x) is permissive and accepts a JSON body even without the header, but newer Bravia XR firmware requires `Content-Type: application/json` explicitly. Without it, the TV accepts the connection and returns HTTP 200, but the body is not parsed, so `getContentList` and similar methods silently produce empty results. The plugin now sends `Content-Type: application/json` by default on every JSON-RPC call (the IRCC endpoint still uses `text/xml`). Verified against the exact request format Marc tested manually with curl: same body, just the missing header was added.
+- **Channel scan returns 0 on Bravia XR / newer firmware (interface v6.x and above), even though a one-off curl with the same payload works.** Reported in [#2](https://github.com/diegoweb100/homebridge-bravia-enhanced/issues/2) by @Mamac-FR. The plugin historically built its HTTP requests without an explicit `Content-Type` header. Older Bravia firmware is permissive and accepts a JSON body without it, but Bravia XR firmware (interface v6.x and above) requires `Content-Type: application/json` explicitly. Without it, the TV accepts the connection and returns HTTP 200, but the body is not parsed, so `getContentList` and similar methods silently produce empty results. The plugin now sends `Content-Type: application/json` by default on every JSON-RPC call. The IRCC endpoint still uses `text/xml`.
 
 ### Added
 
-- **Request and response header logging in debug mode.** When `debug: true`, the plugin now logs `▶ HDR (out)` with every outgoing request and `◀ HDR (in)` with every response. Sensitive header values (`X-Auth-PSK`, `Authorization`, `Cookie`, `Set-Cookie`) are replaced with `<set, N chars>` so presence is visible but the secret never leaks. This makes header-level issues (missing `Content-Type`, unexpected `Set-Cookie` from the TV, redirects) immediately diagnosable. Required to catch the issue above; the previous debug output only logged URL + body, hiding the actual root cause.
-- **`woladdress` sanity check.** When `wolMode` is `directed-broadcast` and `woladdress` does not end in `.255` (suggesting the user accidentally set the TV's own IP instead of the subnet broadcast), a warning is logged at startup with the suggested correct value for a `/24` network. WOL was silently failing in this case because the magic packet was being sent as a unicast to a TV that is off and cannot answer ARP.
+- **Request and response header logging in debug mode.** With `debug: true`, the plugin logs `▶ HDR (out)` for every outgoing request and `◀ HDR (in)` for every response. Sensitive header values (`X-Auth-PSK`, `Authorization`, `Cookie`, `Set-Cookie`) are replaced with `<set, N chars>` so presence is visible but the secret never leaks.
+- **`woladdress` sanity check.** When `wolMode` is `directed-broadcast` and `woladdress` does not end in `.255`, a warning is logged at startup with the suggested correct value for a typical /24 network. Catches the common misconfiguration where the magic packet is sent as a unicast to a TV that is off and cannot answer ARP.
 
 ### Diagnostics
 
-- New helper script `bravia_freshlog.sh` (attached to issue #2) auto-discovers the persist directory, dumps the full negotiated API versions table, runs a live PSK probe against the configured TV showing response headers (so any Set-Cookie or auth oddity is visible), and captures a fresh log slice with auth-focused greps. Sensitive values (PSK, cookies, PIN) are masked so the output can be safely attached to a public issue.
+- New helper script `bravia_freshlog.sh` (attached to issue #2). Auto-discovers the persist directory, dumps the full negotiated API versions table, runs a live PSK probe showing response headers, and captures a fresh log slice. All sensitive values are masked so the output can be safely attached to a public issue.
 
 ---
 

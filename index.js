@@ -1836,6 +1836,24 @@ class SonyTV {
           var reslt = jayons.result[0];
           var foundChannels = 0;
           reslt.forEach(function (source) {
+            // v1.4.19: filter out phantom CEC entries returned by the Sony API.
+            // On newer Bravia XR firmware, getContentList for extInput:cec
+            // sometimes includes a stub row representing the TV's own CEC
+            // logical address (typically port=-1, empty title, logicalAddr=4
+            // which is "Playback Device 1" assigned by the TV to itself).
+            // It cannot be selected as an input , selecting it does nothing
+            // , but the web UI rendered it as a raw URI (no title) and the
+            // polling loop logged it on every cycle. Reported by @Mamac-FR
+            // on K-55XR8M2 (Bravia 8 II, interface v6.3.0). HDMI sources
+            // never have negative ports or empty titles, so the filter is
+            // safe for every other source type.
+            var _isCec = typeof source.uri === 'string' && source.uri.indexOf('extInput:cec') === 0;
+            var _hasNegativePort = typeof source.uri === 'string' && /[?&]port=-\d/.test(source.uri);
+            var _hasEmptyTitle = !source.title || String(source.title).trim().length === 0;
+            if (_isCec && (_hasNegativePort || _hasEmptyTitle)) {
+              if (that.debug) that.log('[' + that.name + '] Skipping phantom CEC entry: ' + source.uri + ' (title="' + (source.title || '') + '")');
+              return;
+            }
             that.scannedChannels.push([source.title, source.uri, sourceType]);
             foundChannels++;
           });
@@ -2059,6 +2077,15 @@ class SonyTV {
         inputs.forEach(function (input) {
           var uri = input.uri;
           if (!uri) return;
+          // v1.4.19: same phantom CEC filter as in receiveSource, keep this
+          // map consistent so the web UI does not display the stub entry from
+          // here either, and the polling log is not spammed every 5 seconds.
+          var _isCec = uri.indexOf('extInput:cec') === 0;
+          var _hasNegativePort = /[?&]port=-\d/.test(uri);
+          var _hasEmptyTitle = !input.title || String(input.title).trim().length === 0;
+          if (_isCec && (_hasNegativePort || _hasEmptyTitle)) {
+            return;
+          }
           var prev = that.externalInputsStatus.get(uri);
           var wasConnected = prev ? prev.connection : null;
           var isConnected = input.connection === true;
