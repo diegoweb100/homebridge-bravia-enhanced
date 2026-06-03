@@ -55,6 +55,244 @@ function getLocalIp() {
 
 var Service, Characteristic, Accessory, UUIDGen, STORAGE_PATH;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// v1.4.20: Autoscan / managed-TVs subsystem
+// ─────────────────────────────────────────────────────────────────────────────
+// All helpers below operate on a single JSON file in the plugin persist dir:
+//     <STORAGE_PATH>/tvs-managed.json
+// The file is the *only* state for autoscan. config.json is never modified.
+// Layout:
+//   { "version": 1, "managedTvs": [ { mac, name, ip, psk?, tvsource?, enabled,
+//     addedAt, lastSeen, discovered: { model, productName, interfaceVer,
+//     serial?, generation?, fwVersion? } }, ... ] }
+// Primary key is `mac` (normalised uppercase, ':' separated).
+
+// Path of the managed-tvs file. STORAGE_PATH is set by module.exports before
+// the platform constructor runs, so reading it here is safe.
+function getManagedTvsPath() {
+  return STORAGE_PATH + '/tvs-managed.json';
+}
+
+// Normalise a MAC to uppercase, colon-separated form. Returns null if invalid.
+function normaliseMac(mac) {
+  if (!mac || typeof mac !== 'string') return null;
+  var hex = mac.replace(/[^0-9a-fA-F]/g, '');
+  if (hex.length !== 12) return null;
+  return hex.toUpperCase().match(/.{2}/g).join(':');
+}
+
+// Load the managed file. Returns { version, managedTvs:[] }. Never throws:
+// missing or corrupt file returns an empty default. Corrupt files are renamed
+// aside so the user can recover them if needed.
+function loadManagedTvs(log) {
+  var p = getManagedTvsPath();
+  if (!fs.existsSync(p)) return { version: 1, managedTvs: [] };
+  try {
+    var raw = fs.readFileSync(p, 'utf8');
+    var parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') throw new Error('not an object');
+    if (!Array.isArray(parsed.managedTvs)) parsed.managedTvs = [];
+    if (!parsed.version) parsed.version = 1;
+    return parsed;
+  } catch (e) {
+    var bak = p + '.corrupt.' + Date.now();
+    try { fs.renameSync(p, bak); } catch (e2) {}
+    if (log) log('[homebridge-bravia-enhanced] ⚠️  tvs-managed.json was corrupt, moved to ' + bak + ' (' + e.message + ')');
+    return { version: 1, managedTvs: [] };
+  }
+}
+
+// Atomic write of the managed file with a timestamped backup of the previous
+// version (if any). The temp file is written first then renamed onto the real
+// path, which is atomic on POSIX. Returns the backup path or null.
+function saveManagedTvs(data, log) {
+  var p = getManagedTvsPath();
+  var tmp = p + '.tmp.' + process.pid + '.' + Date.now();
+  var bak = null;
+  // Validate before touching disk: parse-roundtrip catches missing keys.
+  var json;
+  try { json = JSON.stringify(data, null, 2); }
+  catch (e) { throw new Error('serialise failed: ' + e.message); }
+  // Backup existing file if present.
+  if (fs.existsSync(p)) {
+    bak = p + '.bak.' + new Date().toISOString().replace(/[:.]/g, '-');
+    try { fs.copyFileSync(p, bak); }
+    catch (e) { if (log) log('[homebridge-bravia-enhanced] ⚠️  backup of tvs-managed.json failed (' + e.message + '), continuing anyway'); bak = null; }
+  }
+  // Atomic write: write tmp, then rename.
+  fs.writeFileSync(tmp, json, 'utf8');
+  fs.renameSync(tmp, p);
+  return bak;
+}
+
+// Expand a CIDR range (e.g. "192.168.1.0/24") into the list of usable host
+// IPs (excluding network and broadcast for /24 and smaller). Returns null on
+// invalid input. Caps at 4096 hosts to avoid runaway sweeps on /20 or wider.
+function expandCidr(cidr) {
+  if (typeof cidr !== 'string') return null;
+  var m = cidr.trim().match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
+  if (!m) return null;
+  var bits = parseInt(m[5], 10);
+  if (bits < 16 || bits > 32) return null;
+  var ipNum = (parseInt(m[1], 10) << 24) | (parseInt(m[2], 10) << 16) | (parseInt(m[3], 10) << 8) | parseInt(m[4], 10);
+  var mask = bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
+  var network = (ipNum & mask) >>> 0;
+  var size = bits === 32 ? 1 : (1 << (32 - bits)) >>> 0;
+  if (size > 4096) return null;
+  var hosts = [];
+  var first = size > 1 ? 1 : 0;
+  var last = size > 1 ? size - 1 : 1;
+  for (var i = first; i < last; i++) {
+    var n = (network + i) >>> 0;
+    hosts.push([(n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF].join('.'));
+  }
+  return hosts;
+}
+
+// Read the ARP table to find the MAC for a given IP. Best-effort across OSes.
+// Linux: /proc/net/arp. macOS/BSD: parses output of `arp -n <ip>` if available.
+// Returns null when not resolvable (common in Docker without the host's ARP
+// cache, or when the IP has not been pinged recently).
+function arpLookup(ip) {
+  // Linux: /proc/net/arp
+  try {
+    if (fs.existsSync('/proc/net/arp')) {
+      var lines = fs.readFileSync('/proc/net/arp', 'utf8').split('\n');
+      for (var i = 1; i < lines.length; i++) {
+        var parts = lines[i].trim().split(/\s+/);
+        if (parts.length >= 4 && parts[0] === ip && parts[3] && parts[3] !== '00:00:00:00:00:00') {
+          return normaliseMac(parts[3]);
+        }
+      }
+    }
+  } catch (e) {}
+  // BSD/macOS: best-effort via the `arp` binary (synchronous, short timeout).
+  try {
+    var cp = require('child_process');
+    var out = cp.execFileSync('arp', ['-n', ip], { timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    var m = out.match(/([0-9a-fA-F]{1,2}(:[0-9a-fA-F]{1,2}){5})/);
+    if (m) return normaliseMac(m[1]);
+  } catch (e) {}
+  return null;
+}
+
+// Probe a single IP with getInterfaceInformation. No auth required. Returns
+// the result object on success, null on any failure (timeout, parse error,
+// non-Sony response). Used by the parallel sweep.
+function probeBraviaInterface(ip, timeoutMs, cb) {
+  var body = JSON.stringify({ id: 1, method: 'getInterfaceInformation', version: '1.0', params: [] });
+  var done = false;
+  var finish = function (result) { if (done) return; done = true; cb(result); };
+  var req = http.request({
+    host: ip,
+    port: 80,
+    path: '/sony/system',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    },
+    timeout: timeoutMs
+  }, function (res) {
+    if (res.statusCode !== 200) { res.resume(); finish(null); return; }
+    var data = '';
+    res.on('data', function (c) { data += c; if (data.length > 4096) { res.destroy(); finish(null); } });
+    res.on('end', function () {
+      try {
+        var json = JSON.parse(data);
+        if (!json.result || !json.result[0] || !json.result[0].productCategory) { finish(null); return; }
+        finish(json.result[0]);
+      } catch (e) { finish(null); }
+    });
+    res.on('error', function () { finish(null); });
+  });
+  req.on('timeout', function () { req.destroy(); finish(null); });
+  req.on('error', function () { finish(null); });
+  req.write(body);
+  req.end();
+}
+
+// Call getSystemInformation with PSK auth. Returns the result object (with
+// serial, macAddr, generation, fwVersion) or null/error string on failure.
+function fetchSystemInformation(ip, psk, timeoutMs, cb) {
+  var body = JSON.stringify({ id: 50, method: 'getSystemInformation', version: '1.0', params: [] });
+  var done = false;
+  var finish = function (err, result) { if (done) return; done = true; cb(err, result); };
+  var headers = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body)
+  };
+  if (psk) headers['X-Auth-PSK'] = String(psk);
+  var req = http.request({
+    host: ip, port: 80, path: '/sony/system', method: 'POST',
+    headers: headers, timeout: timeoutMs
+  }, function (res) {
+    var data = '';
+    res.on('data', function (c) { data += c; if (data.length > 8192) { res.destroy(); finish('response too large', null); } });
+    res.on('end', function () {
+      if (res.statusCode === 401 || res.statusCode === 403) { finish('auth rejected (HTTP ' + res.statusCode + ')', null); return; }
+      try {
+        var json = JSON.parse(data);
+        if (json.error) { finish('TV error ' + (json.error[0] || '') + ': ' + (json.error[1] || ''), null); return; }
+        if (!json.result || !json.result[0]) { finish('unexpected response shape', null); return; }
+        finish(null, json.result[0]);
+      } catch (e) { finish('parse error: ' + e.message, null); }
+    });
+  });
+  req.on('timeout', function () { req.destroy(); finish('timeout', null); });
+  req.on('error', function (e) { finish('network error: ' + e.message, null); });
+  req.write(body);
+  req.end();
+}
+
+// Run a parallel HTTP sweep on the given list of IPs, with bounded concurrency.
+// For each responding Bravia, the result includes the interface info and the
+// MAC resolved via ARP (best-effort, may be null). cb(results[]) called once.
+function runDiscoverySweep(hosts, opts, log, cb) {
+  opts = opts || {};
+  var concurrency = Math.max(1, Math.min(64, opts.concurrency || 32));
+  var timeoutMs = Math.max(500, Math.min(10000, opts.timeoutMs || 2000));
+  var found = [];
+  var idx = 0;
+  var active = 0;
+  var startNext = function () {
+    while (active < concurrency && idx < hosts.length) {
+      var ip = hosts[idx++];
+      active++;
+      probeBraviaInterface(ip, timeoutMs, function (capturedIp) {
+        return function (info) {
+          if (info) {
+            found.push({
+              ip: capturedIp,
+              productCategory: info.productCategory || '',
+              productName: info.productName || '',
+              modelName: info.modelName || '',
+              serverName: info.serverName || '',
+              interfaceVersion: info.interfaceVersion || '',
+              mac: arpLookup(capturedIp)
+            });
+          }
+          active--;
+          if (idx >= hosts.length && active === 0) {
+            // Sort by IP for stable output.
+            found.sort(function (a, b) {
+              var pa = a.ip.split('.').map(Number);
+              var pb = b.ip.split('.').map(Number);
+              for (var i = 0; i < 4; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i];
+              return 0;
+            });
+            cb(found);
+          } else {
+            startNext();
+          }
+        };
+      }(ip));
+    }
+  };
+  if (hosts.length === 0) { cb([]); return; }
+  startNext();
+}
+
 class BraviaPlatform {
   constructor(log, config, api) {
     if (!config || !api) {
@@ -64,20 +302,69 @@ class BraviaPlatform {
     this.log = log;
     this.config = config;
     this.api = api;
+    var self = this;
     
     log('Platform initializing');
-    
-    if (!config.tvs) {
-      log('Warning: Bravia plugin not configured - no TVs in config');
+
+    // v1.4.20: autoscan / managed TVs.
+    // When autoscan is true, TVs added through the /discover web UI are stored
+    // in <STORAGE_PATH>/tvs-managed.json and merged with config.tvs at load
+    // time. config.json is never written to. Priority on duplicates (same
+    // MAC): config.json wins, managed entry is silently skipped with a
+    // warning in the log. Entries with enabled:false are loaded but ignored.
+    this.autoscan = config.autoscan === true;
+    this.discoveryRange = config.discoveryRange || null; // string or string[]
+    this._effectiveTvs = Array.isArray(config.tvs) ? config.tvs.slice() : [];
+    if (this.autoscan) {
+      try {
+        var managed = loadManagedTvs(log);
+        var configMacs = {};
+        // Collect MACs already present in config.json (case-insensitive).
+        this._effectiveTvs.forEach(function (t) {
+          var nm = normaliseMac(t.mac);
+          if (nm) configMacs[nm] = t.name || t.ip || '?';
+        });
+        var added = 0, skipped = 0, disabled = 0;
+        (managed.managedTvs || []).forEach(function (m) {
+          if (!m || !m.name || !m.ip) return;
+          if (m.enabled === false) { disabled++; return; }
+          var nm = normaliseMac(m.mac);
+          if (nm && configMacs[nm]) {
+            log('[homebridge-bravia-enhanced] ⚠️  Managed TV "' + m.name + '" (MAC ' + nm + ') is also configured in config.json as "' + configMacs[nm] + '" — config.json wins, managed entry skipped');
+            skipped++;
+            return;
+          }
+          // Project managed entry into a config-shaped TV object. Only fields
+          // the rest of the plugin knows about are forwarded.
+          var projected = {
+            name: m.name,
+            ip: m.ip,
+            mac: m.mac,
+            psk: m.psk,
+            tvsource: m.tvsource,
+            // The user can edit these from the managed UI in a future step;
+            // for now they fall back to platform defaults.
+            debug: m.debug === true
+          };
+          self._effectiveTvs.push(projected);
+          added++;
+        });
+        log('Autoscan: loaded ' + (managed.managedTvs ? managed.managedTvs.length : 0) + ' managed TV(s) (' + added + ' added, ' + skipped + ' skipped, ' + disabled + ' disabled)');
+      } catch (e) {
+        log('[homebridge-bravia-enhanced] ⚠️  Failed to load managed TVs: ' + (e && e.message ? e.message : e));
+      }
+    }
+    if (!this._effectiveTvs || this._effectiveTvs.length === 0) {
+      log('Warning: Bravia plugin not configured - no TVs in config or managed file');
       return;
     }
-    
-    log('Found ' + config.tvs.length + ' TV(s) in config');
+
+    log('Found ' + this._effectiveTvs.length + ' TV(s) (config + managed)');
 
     // Install global error handlers ONLY if at least one TV has debug enabled.
     // These handlers help diagnose otherwise-silent plugin crashes by surfacing
     // the full stack trace into the Homebridge log.
-    const anyDebug = (config.tvs || []).some((t) => t && t.debug === true);
+    const anyDebug = (this._effectiveTvs || []).some((t) => t && t.debug === true);
     if (anyDebug && !global.__braviaEnhancedErrorHandlersInstalled) {
       global.__braviaEnhancedErrorHandlersInstalled = true;
       process.on('uncaughtException', (err) => {
@@ -89,10 +376,9 @@ class BraviaPlatform {
     }
 
     this.devices = [];
-    const self = this;
     api.on('didFinishLaunching', function () {
       if (self.debug) self.log('Platform launched');
-      self.config.tvs.forEach(function (tv) {
+      self._effectiveTvs.forEach(function (tv) {
         if (self.devices.find(device => device.name === tv.name) == undefined) {
           if (self.debug) self.log('Registering TV: ' + tv.name);
           self.devices.push(new SonyTV(self, tv));
@@ -118,7 +404,12 @@ class BraviaPlatform {
       return;
     }
     
-    var existingConfig = this.config.tvs.find(tv => tv.name === accessory.context.config.name);
+    // v1.4.20: when looking up the cached accessory, search both config.json
+    // and the managed file so autoscan-added TVs are not wrongly removed at
+    // startup. Falls back to config.tvs for backwards compatibility if
+    // _effectiveTvs was not populated yet (e.g. early restoration call).
+    var pool = (this._effectiveTvs && this._effectiveTvs.length > 0) ? this._effectiveTvs : this.config.tvs;
+    var existingConfig = pool.find(tv => tv.name === accessory.context.config.name);
     
     if (existingConfig === undefined) {
       this.log('Removing TV ' + accessory.displayName + ' from HomeKit (not in config)');
@@ -3109,6 +3400,39 @@ const pinRequired = !paired;
         // Always available regardless of enableChannelSelector flag because the
         // Pairing page (which is part of the always-on web server) needs it.
         self.apiDeleteCookie(req, res);
+      } else if (pathname === '/discover') {
+        // v1.4.20: Autoscan UI page. Always served (regardless of
+        // enableChannelSelector) so a fresh install can find TVs before any
+        // are configured.
+        self.serveFile(res, path.join(__dirname, 'web', 'discover.html'), 'text/html');
+      } else if (pathname === '/web/discover.js') {
+        self.serveFile(res, path.join(__dirname, 'web', 'discover.js'), 'application/javascript');
+      } else if (pathname === '/api/discover' && req.method === 'GET') {
+        // v1.4.20: trigger an HTTP sweep across the configured discoveryRange
+        // (or the local /24 if none is set). Returns the list of Bravia TVs
+        // found, with model / interface version / MAC (best-effort via ARP).
+        self.apiDiscover(req, res);
+      } else if (pathname === '/api/managed-tvs' && req.method === 'GET') {
+        // v1.4.20: dump the current tvs-managed.json content, with each
+        // managed entry annotated with whether it conflicts with config.json.
+        self.apiManagedList(req, res);
+      } else if (pathname === '/api/managed-tvs' && req.method === 'POST') {
+        // v1.4.20: add a new managed TV. Body: { ip, name, psk?, tvsource? }.
+        // The plugin enriches the entry with getSystemInformation when a PSK
+        // is provided, then persists. Returns the saved entry.
+        self.apiManagedAdd(req, res);
+      } else if (pathname.indexOf('/api/managed-tvs/') === 0 && req.method === 'PATCH') {
+        // v1.4.20: update an existing managed TV by MAC. Allowed fields:
+        // name, ip, psk, tvsource, enabled.
+        self.apiManagedPatch(req, res, pathname.slice('/api/managed-tvs/'.length));
+      } else if (pathname.indexOf('/api/managed-tvs/') === 0 && req.method === 'DELETE') {
+        // v1.4.20: remove a single managed TV by MAC.
+        self.apiManagedDelete(req, res, pathname.slice('/api/managed-tvs/'.length));
+      } else if (pathname === '/api/managed-tvs/clear' && req.method === 'POST') {
+        // v1.4.20: wipe the managed file (the UI prompts for confirmation
+        // client-side; this endpoint trusts the request and always backs up
+        // before clearing).
+        self.apiManagedClear(req, res);
       } else if (pathname === '/channel-selector.js') {
         if (!self.enableChannelSelector) {
           res.writeHead(404);
@@ -3333,6 +3657,307 @@ const pinRequired = !paired;
     } catch (e) {
       self.log('[' + self.name + '] ERROR deleting cookie: ' + e.toString());
       self.sendJSON(res, { success: false, message: 'Could not delete cookie: ' + e.toString() });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // v1.4.20: Autoscan / managed-TVs HTTP API
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Resolve the list of host IPs to sweep. Looks at platform.discoveryRange
+  // first (string or string[]), falls back to the local /24 derived from
+  // getLocalIp(). Returns { hosts, ranges, source } for logging/diagnostics.
+  _autoscanResolveHosts() {
+    const platform = this.platform || {};
+    let ranges = platform.discoveryRange;
+    let source = 'config.discoveryRange';
+    if (!ranges) {
+      const localIp = getLocalIp();
+      if (!localIp) return { hosts: [], ranges: [], source: 'autodetect (failed)' };
+      const prefix = localIp.split('.').slice(0, 3).join('.');
+      ranges = [prefix + '.0/24'];
+      source = 'autodetect from local IP ' + localIp;
+    }
+    if (typeof ranges === 'string') ranges = [ranges];
+    if (!Array.isArray(ranges)) ranges = [];
+    const all = [];
+    const accepted = [];
+    ranges.forEach(function (r) {
+      const expanded = expandCidr(r);
+      if (expanded) {
+        accepted.push(r);
+        // Deduplicate while preserving order.
+        expanded.forEach(function (ip) { if (all.indexOf(ip) === -1) all.push(ip); });
+      }
+    });
+    return { hosts: all, ranges: accepted, source: source };
+  }
+
+  // GET /api/discover — sweep + return found TVs with ARP-resolved MAC.
+  // Also annotates whether each MAC is already in config.json or already in
+  // the managed file, so the UI can grey out duplicates.
+  apiDiscover(req, res) {
+    const self = this;
+    const resolved = self._autoscanResolveHosts();
+    if (resolved.hosts.length === 0) {
+      return self.sendJSON(res, {
+        success: false,
+        message: 'No subnet to scan. Set "discoveryRange" in plugin config, or ensure the host has a non-loopback IPv4 address.'
+      });
+    }
+    self.log('[' + self.name + '] /api/discover: sweeping ' + resolved.hosts.length + ' host(s) on ' + resolved.ranges.join(', ') + ' (' + resolved.source + ')');
+    runDiscoverySweep(resolved.hosts, { concurrency: 32, timeoutMs: 2000 }, self.log, function (found) {
+      // Build the MAC-indexed view of what's already known so the UI can grey
+      // duplicates out instead of failing on POST later.
+      const configMacs = {};
+      const configByMac = {};
+      const platform = self.platform || {};
+      (platform.config && platform.config.tvs ? platform.config.tvs : []).forEach(function (t) {
+        const nm = normaliseMac(t.mac);
+        if (nm) { configMacs[nm] = true; configByMac[nm] = t.name; }
+      });
+      const managedMacs = {};
+      let managedData = { managedTvs: [] };
+      try { managedData = loadManagedTvs(self.log); } catch (e) {}
+      (managedData.managedTvs || []).forEach(function (m) {
+        const nm = normaliseMac(m.mac);
+        if (nm) managedMacs[nm] = m.name;
+      });
+      const enriched = found.map(function (f) {
+        const nm = normaliseMac(f.mac);
+        return {
+          ip: f.ip,
+          mac: nm,
+          productCategory: f.productCategory,
+          productName: f.productName,
+          modelName: f.modelName,
+          serverName: f.serverName,
+          interfaceVersion: f.interfaceVersion,
+          // Suggest a default display name based on the TV info.
+          suggestedName: (f.productName || 'BRAVIA') + (f.modelName ? ' ' + f.modelName : ''),
+          // Help the UI decide whether to require PSK upfront.
+          authHint: self._guessAuthMode(f.interfaceVersion),
+          inConfig: nm ? !!configMacs[nm] : false,
+          inConfigAs: nm && configMacs[nm] ? configByMac[nm] : null,
+          inManaged: nm ? !!managedMacs[nm] : false,
+          inManagedAs: nm && managedMacs[nm] ? managedMacs[nm] : null
+        };
+      });
+      self.log('[' + self.name + '] /api/discover: ' + enriched.length + ' Bravia TV(s) found');
+      self.sendJSON(res, {
+        success: true,
+        scannedHosts: resolved.hosts.length,
+        ranges: resolved.ranges,
+        source: resolved.source,
+        results: enriched
+      });
+    });
+  }
+
+  // Heuristic auth mode hint based on interface version. Bravia XR (v6.x+)
+  // requires PSK in most setups; older Android TVs can pair via PIN+cookie.
+  // This is informational only — the user can always override.
+  _guessAuthMode(interfaceVersion) {
+    if (!interfaceVersion) return 'unknown';
+    const major = parseInt(String(interfaceVersion).split('.')[0], 10);
+    if (isNaN(major)) return 'unknown';
+    if (major >= 6) return 'psk-recommended';
+    return 'cookie-pairing';
+  }
+
+  // GET /api/managed-tvs — list managed entries with conflict annotation.
+  apiManagedList(req, res) {
+    const self = this;
+    let data;
+    try { data = loadManagedTvs(self.log); }
+    catch (e) { return self.sendJSON(res, { success: false, message: 'Could not load managed file: ' + e.message }); }
+    // Annotate each entry with conflict-with-config flag.
+    const platform = self.platform || {};
+    const configMacs = {};
+    (platform.config && platform.config.tvs ? platform.config.tvs : []).forEach(function (t) {
+      const nm = normaliseMac(t.mac);
+      if (nm) configMacs[nm] = t.name;
+    });
+    const out = (data.managedTvs || []).map(function (m) {
+      const nm = normaliseMac(m.mac);
+      const conflictsWithConfig = nm && configMacs[nm];
+      return Object.assign({}, m, {
+        mac: nm,
+        conflictsWithConfig: !!conflictsWithConfig,
+        conflictName: conflictsWithConfig ? configMacs[nm] : null
+      });
+    });
+    self.sendJSON(res, { success: true, autoscanEnabled: !!(platform.autoscan), version: data.version || 1, managedTvs: out });
+  }
+
+  // POST /api/managed-tvs — body { ip, name, psk?, tvsource?, mac? }.
+  // The plugin verifies the TV is reachable and (if a PSK is given) calls
+  // getSystemInformation to enrich the entry with serial/MAC/generation.
+  apiManagedAdd(req, res) {
+    const self = this;
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; if (body.length > 16384) { req.destroy(); } });
+    req.on('end', function () {
+      let payload;
+      try { payload = JSON.parse(body || '{}'); }
+      catch (e) { return self.sendJSON(res, { success: false, message: 'Invalid JSON body' }); }
+      const ip = (payload.ip || '').trim();
+      const name = (payload.name || '').trim();
+      if (!ip) return self.sendJSON(res, { success: false, message: 'Missing required field: ip' });
+      if (!name) return self.sendJSON(res, { success: false, message: 'Missing required field: name' });
+      const psk = payload.psk ? String(payload.psk) : null;
+      const tvsource = payload.tvsource || null;
+      // Step 1: try to enrich via getSystemInformation. This needs auth.
+      // - With PSK: we get serial/macAddr/generation/fwVersion right away.
+      // - Without PSK (cookie pairing TVs): skipped; we use ARP for MAC.
+      const finishWith = function (enriched, enrichmentError) {
+        // Resolve MAC: enrichment first, then ARP, then payload.mac, else null.
+        let mac = enriched && enriched.macAddr ? normaliseMac(enriched.macAddr) : null;
+        if (!mac) mac = arpLookup(ip);
+        if (!mac && payload.mac) mac = normaliseMac(payload.mac);
+        // Without a MAC the entry has no stable key; reject.
+        if (!mac) {
+          return self.sendJSON(res, {
+            success: false,
+            message: 'Could not resolve a MAC address for ' + ip + '. ' +
+              (psk ? 'PSK enrichment failed (' + (enrichmentError || 'no macAddr in response') + '), ' : '') +
+              'and the host ARP table did not return one (try pinging the TV first, or pass "mac" in the request body).'
+          });
+        }
+        // Check duplicates against config.json — config wins, refuse add.
+        const platform = self.platform || {};
+        const configTvs = (platform.config && platform.config.tvs) ? platform.config.tvs : [];
+        for (let i = 0; i < configTvs.length; i++) {
+          if (normaliseMac(configTvs[i].mac) === mac) {
+            return self.sendJSON(res, {
+              success: false,
+              message: 'A TV with MAC ' + mac + ' is already in config.json as "' + (configTvs[i].name || '?') + '". Edit it there instead.'
+            });
+          }
+        }
+        // Load + upsert managed entry.
+        let data;
+        try { data = loadManagedTvs(self.log); }
+        catch (e) { return self.sendJSON(res, { success: false, message: 'Could not load managed file: ' + e.message }); }
+        const existingIdx = (data.managedTvs || []).findIndex(function (m) { return normaliseMac(m.mac) === mac; });
+        const nowIso = new Date().toISOString();
+        const entry = {
+          mac: mac,
+          name: name,
+          ip: ip,
+          psk: psk || undefined,
+          tvsource: tvsource || undefined,
+          enabled: existingIdx >= 0 ? (data.managedTvs[existingIdx].enabled !== false) : true,
+          addedAt: existingIdx >= 0 ? (data.managedTvs[existingIdx].addedAt || nowIso) : nowIso,
+          lastSeen: nowIso,
+          discovered: {
+            model: enriched && enriched.model ? enriched.model : (payload.modelName || null),
+            productName: payload.productName || null,
+            interfaceVer: payload.interfaceVersion || null,
+            serial: enriched && enriched.serial ? enriched.serial : null,
+            generation: enriched && enriched.generation ? enriched.generation : null,
+            fwVersion: enriched && enriched.fwVersion ? enriched.fwVersion : null
+          }
+        };
+        if (existingIdx >= 0) data.managedTvs[existingIdx] = entry;
+        else data.managedTvs.push(entry);
+        try {
+          const bak = saveManagedTvs(data, self.log);
+          self.log('[' + self.name + '] /api/managed-tvs (POST): ' + (existingIdx >= 0 ? 'updated' : 'added') + ' "' + name + '" (' + mac + ', ' + ip + ')' + (bak ? ' [backup: ' + bak + ']' : ''));
+          self.sendJSON(res, {
+            success: true,
+            message: existingIdx >= 0 ? 'Updated' : 'Added',
+            entry: entry,
+            backup: bak,
+            enrichmentError: enrichmentError,
+            restartRequired: true
+          });
+        } catch (e) {
+          self.log('[' + self.name + '] /api/managed-tvs (POST) ERROR: ' + e.message);
+          self.sendJSON(res, { success: false, message: 'Save failed: ' + e.message });
+        }
+      };
+      // No PSK → skip enrichment, go straight to MAC resolution.
+      if (!psk) return finishWith(null, 'no PSK provided');
+      fetchSystemInformation(ip, psk, 4000, function (err, sysInfo) {
+        if (err) return finishWith(null, err);
+        finishWith(sysInfo, null);
+      });
+    });
+  }
+
+  // PATCH /api/managed-tvs/:mac — partial update of an existing entry.
+  apiManagedPatch(req, res, macRaw) {
+    const self = this;
+    const targetMac = normaliseMac(decodeURIComponent(macRaw || ''));
+    if (!targetMac) return self.sendJSON(res, { success: false, message: 'Invalid MAC in path' });
+    let body = '';
+    req.on('data', function (chunk) { body += chunk; if (body.length > 16384) { req.destroy(); } });
+    req.on('end', function () {
+      let payload;
+      try { payload = JSON.parse(body || '{}'); }
+      catch (e) { return self.sendJSON(res, { success: false, message: 'Invalid JSON body' }); }
+      let data;
+      try { data = loadManagedTvs(self.log); }
+      catch (e) { return self.sendJSON(res, { success: false, message: 'Could not load managed file: ' + e.message }); }
+      const idx = (data.managedTvs || []).findIndex(function (m) { return normaliseMac(m.mac) === targetMac; });
+      if (idx < 0) return self.sendJSON(res, { success: false, message: 'No managed TV with MAC ' + targetMac });
+      const entry = data.managedTvs[idx];
+      // Allow-listed fields only.
+      const allowed = ['name', 'ip', 'psk', 'tvsource', 'enabled'];
+      let changed = [];
+      allowed.forEach(function (k) {
+        if (Object.prototype.hasOwnProperty.call(payload, k)) {
+          entry[k] = payload[k];
+          changed.push(k);
+        }
+      });
+      if (changed.length === 0) return self.sendJSON(res, { success: false, message: 'No allowed fields to update (allowed: ' + allowed.join(', ') + ')' });
+      try {
+        const bak = saveManagedTvs(data, self.log);
+        self.log('[' + self.name + '] /api/managed-tvs (PATCH): updated ' + targetMac + ' fields=' + changed.join(',') + (bak ? ' [backup: ' + bak + ']' : ''));
+        self.sendJSON(res, { success: true, entry: entry, backup: bak, restartRequired: true });
+      } catch (e) {
+        self.sendJSON(res, { success: false, message: 'Save failed: ' + e.message });
+      }
+    });
+  }
+
+  // DELETE /api/managed-tvs/:mac — remove one entry.
+  apiManagedDelete(req, res, macRaw) {
+    const self = this;
+    const targetMac = normaliseMac(decodeURIComponent(macRaw || ''));
+    if (!targetMac) return self.sendJSON(res, { success: false, message: 'Invalid MAC in path' });
+    let data;
+    try { data = loadManagedTvs(self.log); }
+    catch (e) { return self.sendJSON(res, { success: false, message: 'Could not load managed file: ' + e.message }); }
+    const before = (data.managedTvs || []).length;
+    data.managedTvs = (data.managedTvs || []).filter(function (m) { return normaliseMac(m.mac) !== targetMac; });
+    if (data.managedTvs.length === before) return self.sendJSON(res, { success: false, message: 'No managed TV with MAC ' + targetMac });
+    try {
+      const bak = saveManagedTvs(data, self.log);
+      self.log('[' + self.name + '] /api/managed-tvs (DELETE): removed ' + targetMac + (bak ? ' [backup: ' + bak + ']' : ''));
+      self.sendJSON(res, { success: true, removed: targetMac, backup: bak, restartRequired: true });
+    } catch (e) {
+      self.sendJSON(res, { success: false, message: 'Save failed: ' + e.message });
+    }
+  }
+
+  // POST /api/managed-tvs/clear — wipe all managed entries. The client-side
+  // is expected to have shown a confirmation prompt before calling this.
+  apiManagedClear(req, res) {
+    const self = this;
+    let data;
+    try { data = loadManagedTvs(self.log); }
+    catch (e) { return self.sendJSON(res, { success: false, message: 'Could not load managed file: ' + e.message }); }
+    const removedCount = (data.managedTvs || []).length;
+    data.managedTvs = [];
+    try {
+      const bak = saveManagedTvs(data, self.log);
+      self.log('[' + self.name + '] /api/managed-tvs/clear: removed ' + removedCount + ' entry/entries' + (bak ? ' [backup: ' + bak + ']' : ''));
+      self.sendJSON(res, { success: true, removed: removedCount, backup: bak, restartRequired: removedCount > 0 });
+    } catch (e) {
+      self.sendJSON(res, { success: false, message: 'Save failed: ' + e.message });
     }
   }
   

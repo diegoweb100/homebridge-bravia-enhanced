@@ -6,6 +6,35 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.20] - 2026-06-03
+
+### Added
+
+- **Autoscan / managed TVs**: a new optional way to add TVs to the plugin without editing `config.json`. When `autoscan: true` is set at platform level in `config.json`, TVs added through the new `/discover` web UI are persisted in a separate `tvs-managed.json` file (in the plugin persist directory) and merged with `config.json` at startup. The plugin never writes to `config.json`.
+- **Network discovery endpoint** `GET /api/discover`: HTTP sweep of the local `/24` (or of `discoveryRange` if set in config) in parallel, with no authentication required. Returns each found Sony Bravia TV with model, interface version, suggested name, MAC (resolved via ARP when possible), and conflict flags against `config.json` and the managed file.
+- **Managed-TVs REST API**:
+    - `GET /api/managed-tvs` lists current managed entries with config-conflict annotations.
+    - `POST /api/managed-tvs` adds a TV. Primary key is MAC: resolved via PSK enrichment (`getSystemInformation`) when a PSK is provided, otherwise via ARP, otherwise via an explicit MAC in the request body. POSTs that conflict with a MAC already in `config.json` are refused.
+    - `PATCH /api/managed-tvs/:mac` updates `name`, `ip`, `psk`, `tvsource`, or `enabled`.
+    - `DELETE /api/managed-tvs/:mac` removes a single entry.
+    - `POST /api/managed-tvs/clear` wipes the file (with automatic backup).
+- **Discover web UI** at `/discover`: scan button, list of found TVs with one-click add, managed-TVs section with enable/disable toggle, edit, delete, and bulk clear. Links from both Pairing and Channel Selector pages.
+- **Two new platform-level config keys** in `config.schema.json`: `autoscan` (boolean, default false) and `discoveryRange` (CIDR string, e.g. `192.168.1.0/24`; capped at 4096 hosts).
+
+### Safety
+
+- All writes to `tvs-managed.json` are atomic (`write tmp + rename`) and create a timestamped `.bak` of the previous file before modification. Corrupt files are renamed aside (`.corrupt.<ts>`) at startup rather than crashing the plugin.
+- On duplicate MAC between `config.json` and `tvs-managed.json`, the entry from `config.json` wins and the managed entry is silently skipped at boot with a warning in the Homebridge log. The `/api/managed-tvs` POST refuses upfront with an explicit message.
+- Managed entries with `enabled: false` are loaded but not registered in HomeKit; toggling them back is a single API call without any data loss.
+
+### Notes
+
+- All `/discover` and `/api/managed-tvs/*` endpoints follow the same trust model as the existing pairing and channel-selector endpoints: LAN-only, no authentication. Do not expose port `serverPort` to the internet.
+- A TV in deep sleep with the network interface fully powered down cannot be discovered. Enable `Eco -> Quick Start` on the TV (or wake it) before scanning.
+- The first published version of this feature kept `autoscan` and `discoveryRange` at platform level. If you mistakenly put them inside an entry of `tvs[]`, they are ignored.
+
+---
+
 ## [1.4.19] - 2026-05-30
 
 ### Fixed

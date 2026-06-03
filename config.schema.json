@@ -4,6 +4,19 @@
   "headerDisplay": "After restarting Homebridge, check the log for the web UI URL (default port: 8999). Open that address to enter the PIN shown on your TV, then use the same address to access the Channel Selector UI.",
   "footerDisplay": "For documentation please see https://github.com/diegoweb100/homebridge-bravia-enhanced",
   "schema": {
+    "autoscan": {
+      "title": "Autoscan (managed TVs)",
+      "description": "When enabled, TVs added through the /discover web UI are stored in a separate managed file (plugin-persist/homebridge-bravia/tvs-managed.json) and merged with TVs in this config at load time. The plugin never modifies your config.json. On duplicates by MAC, config.json wins and a warning is logged.",
+      "type": "boolean",
+      "required": false,
+      "default": false
+    },
+    "discoveryRange": {
+      "title": "Discovery range (CIDR)",
+      "description": "Subnet(s) to scan from the /discover UI, e.g. '192.168.1.0/24'. Leave empty to autodetect from the local IP. Limited to /20 or smaller (4096 hosts max).",
+      "type": "string",
+      "required": false
+    },
     "tvs": {
       "title": "Registered TVs",
       "required": false,
@@ -145,6 +158,8 @@
     }
   },
   "form": [
+    "autoscan",
+    "discoveryRange",
     {
       "key": "tvs",
       "items": [
