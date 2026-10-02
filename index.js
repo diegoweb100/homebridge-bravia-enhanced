@@ -11,6 +11,45 @@ const { v4: uuidv4 } = require('uuid');
 // Base identifier for TV tuner channels to avoid collisions with HDMI/App identifiers.
 const TV_IDENTIFIER_BASE = 1000;
 
+// HAP limit is 100 services per accessory: AccessoryInformation + Television +
+// TelevisionSpeaker leave room for 97 InputSource services.
+const MAX_HOMEKIT_INPUTS = 97;
+
+// Fallback list of external input sources, used only when "sources" is not set
+// in config AND the TV does not answer getSourceList. Sources the TV does not
+// have simply return an error and are skipped.
+const DEFAULT_SOURCES = ['extInput:hdmi', 'extInput:composite', 'extInput:component', 'extInput:scart', 'extInput:cec', 'extInput:widi'];
+
+// Remote-control functions offered as selectable inputs in the Channel
+// Selector. Selecting one in the Home app presses that key on the TV.
+// Only keys the TV reports in getRemoteControllerInfo are offered; "usb"
+// entries only when a USB recording drive is connected to the TV.
+const VIRTUAL_INPUTS = [
+  { name: 'Teletext', uri: 'ircc:Teletext' },
+  { name: 'TV Guide', uri: 'ircc:GGuide' },
+  { name: 'Subtitles', uri: 'ircc:SubTitle' },
+  { name: 'Audio track', uri: 'ircc:Audio' },
+  { name: 'TV / Radio', uri: 'ircc:Tv_Radio' },
+  { name: 'Home menu', uri: 'ircc:Home' },
+  { name: 'Channel +', uri: 'ircc:ChannelUp' },
+  { name: 'Channel -', uri: 'ircc:ChannelDown' },
+  { name: 'Record now', uri: 'ircc:Rec', needs: 'usb' }
+];
+// IRCC codes used when the TV does not answer getRemoteControllerInfo
+// (standard Sony codes, verified on a KD-55X9005B).
+const IRCC_FALLBACK = {
+  Teletext: 'AAAAAQAAAAEAAAA/Aw==',
+  GGuide: 'AAAAAQAAAAEAAAAOAw==',
+  SubTitle: 'AAAAAgAAAJcAAAAoAw==',
+  Audio: 'AAAAAQAAAAEAAAAXAw==',
+  Tv_Radio: 'AAAAAgAAABoAAABXAw==',
+  Home: 'AAAAAQAAAAEAAABgAw==',
+  ChannelUp: 'AAAAAQAAAAEAAAAQAw==',
+  ChannelDown: 'AAAAAQAAAAEAAAARAw==',
+  Rec: 'AAAAAgAAAJcAAAAgAw==',
+  Options: 'AAAAAgAAAJcAAAA2Aw=='
+};
+
 // Reads the DNS domain suffix configured on the host without hardcoding any value.
 // Tries nmcli (Linux/NetworkManager), scutil (macOS), ipconfig (Windows).
 // Returns e.g. '.local' or '.deltatre.it' or '' if not determinable.
@@ -302,8 +341,9 @@ class BraviaPlatform {
     this.log = log;
     this.config = config;
     this.api = api;
+    this.devices = [];
     var self = this;
-    
+
     log('Platform initializing');
 
     // v1.4.20: autoscan / managed TVs.
@@ -399,16 +439,16 @@ class BraviaPlatform {
     const self = this;
     if (this.debug) this.log('Restoring cached accessory: ' + accessory.displayName);
     
-    if (!this.config || !this.config.tvs) { // happens if plugin is disabled and still active accessories
+    // v1.4.21: the pool of known TVs is config.tvs PLUS the autoscan-managed
+    // TVs (_effectiveTvs). Up to v1.4.20 a config with only autoscan TVs (no
+    // "tvs" array) bailed out here, the cached accessory was never restored,
+    // a new accessory with the same UUID was then created and Homebridge
+    // skipped it as a duplicate — leaving a dead TV tile in HomeKit.
+    var pool = (this._effectiveTvs && this._effectiveTvs.length > 0) ? this._effectiveTvs : ((this.config && Array.isArray(this.config.tvs)) ? this.config.tvs : null);
+    if (!this.config || !pool) { // plugin disabled / not configured but accessories still cached
       this.log('Config not available, cannot restore accessory');
       return;
     }
-    
-    // v1.4.20: when looking up the cached accessory, search both config.json
-    // and the managed file so autoscan-added TVs are not wrongly removed at
-    // startup. Falls back to config.tvs for backwards compatibility if
-    // _effectiveTvs was not populated yet (e.g. early restoration call).
-    var pool = (this._effectiveTvs && this._effectiveTvs.length > 0) ? this._effectiveTvs : this.config.tvs;
     var existingConfig = pool.find(tv => tv.name === accessory.context.config.name);
     
     if (existingConfig === undefined) {
@@ -555,7 +595,10 @@ class SonyTV {
     // After the WOL burst, poll getPowerStatus until the TV reports active or
     // until this timeout expires. Used only for logging/verification, the
     // HomeKit callback is invoked earlier so HomeKit doesn't time out.
-    this.wakeWaitMaxMs = config.wakeWaitMaxMs || 15000;
+    // v1.4.21: default raised from 15s to 45s. Older Bravia (e.g. KD-55X9005B)
+    // need ~25s from the magic packet to a working REST API, so a 15s window
+    // logged a misleading "TV did not become alive" on every successful wake.
+    this.wakeWaitMaxMs = config.wakeWaitMaxMs || 45000;
     this.wakeWaitIntervalMs = config.wakeWaitIntervalMs || 2000;
     // Delay applied before the first channel scan after a wake-up. Channel
     // queries may fail if issued too soon after the TV becomes alive while
@@ -566,9 +609,42 @@ class SonyTV {
     // adaptive polling window and the post-wake scan delay.
     this.recentlyWokenAt = 0;
     this.starttimeout = config.starttimeout || 5000;
-    this.comp = config.compatibilitymode;
+    if (!isNull(config.compatibilitymode)) {
+      this.log('[' + config.name + '] ℹ️  "compatibilitymode" is obsolete and ignored since v1.4.21 — you can remove it from config.');
+    }
     this.serverPort = config.serverPort || 8999;
-    this.sources = config.sources || ['extInput:hdmi', 'extInput:component', 'extInput:scart', 'extInput:cec', 'extInput:widi'];
+    // v1.4.21: external input sources.
+    //  - `sources` set in config → used exactly as configured (only entries
+    //    that are not Sony source URIs, e.g. "HDMI 3" typed by mistake, are
+    //    dropped with a warning — they could never match anything, and they
+    //    silently replaced the whole default list: issue #6).
+    //  - `sources` not set → the TV's own list is read at scan time with
+    //    getSourceList (e.g. cec, composite, hdmi, scart, widi). Fallback if the
+    //    TV does not answer: DEFAULT_SOURCES. The old default list used
+    //    "extInput:component", which Sony TVs reject: the analog A/V input is
+    //    "extInput:composite" (issue #8).
+    this.sourcesAuto = false;
+    if (Array.isArray(config.sources) && config.sources.length > 0) {
+      var _valid = [];
+      config.sources.forEach((s) => {
+        var v = (typeof s === 'string') ? s.trim() : '';
+        if (/^[a-zA-Z]+:[a-zA-Z0-9_\-]+/.test(v)) {
+          _valid.push(v);
+        } else {
+          this.log('[' + config.name + '] ⚠️  Ignoring invalid entry in "sources": "' + s + '". Use Sony source URIs such as extInput:hdmi, extInput:composite, extInput:scart, extInput:cec, extInput:widi. To show or hide single inputs (e.g. only HDMI 3) use the Channel Selector.');
+        }
+      });
+      if (_valid.length > 0) {
+        this.sources = _valid;
+      } else {
+        this.log('[' + config.name + '] ⚠️  No valid entry in "sources" — reading the input list from the TV instead');
+        this.sources = DEFAULT_SOURCES.slice();
+        this.sourcesAuto = true;
+      }
+    } else {
+      this.sources = DEFAULT_SOURCES.slice();
+      this.sourcesAuto = true;
+    }
     this.useApps = (isNull(config.applications)) ? false : (config.applications instanceof Array == true ? config.applications.length > 0 : config.applications);
     this.applications = (isNull(config.applications) || (config.applications instanceof Array != true)) ? [] : config.applications;
     this.cookiepath = STORAGE_PATH + '/sonycookie_' + this.name;
@@ -580,6 +656,19 @@ class SonyTV {
     this.volumeAccessory = config.volumeAccessory === true;
     this.volumeUI = config.volumeUI === true;
     this.volumeAccessoryInstance = null; // will hold the Lightbulb accessory if enabled
+    // v1.4.21: optional "<name> Controls" accessory: picture-mode switches and "Screen off".
+    this.controlsAccessory = config.controlsAccessory === true;
+    this.controlsScenes = Array.isArray(config.controlsScenes) && config.controlsScenes.length
+      ? config.controlsScenes.filter((x) => typeof x === 'string' && /^[a-zA-Z0-9]+$/.test(x)).slice(0, 12)
+      : ['cinema', 'game', 'sports'];
+    this.controlsAccessoryInstance = null;
+    // v1.4.21: optional separate Home tiles, so the TV's input list keeps only
+    // inputs, channels and radio: "<name> Apps" and "<name> Recordings" (own
+    // TV tiles: picking an entry launches the app / plays the recording) and
+    // "<name> Functions" (one button per remote function, e.g. Teletext).
+    this.appsAccessory = config.appsAccessory === true;
+    this.recordingsAccessory = config.recordingsAccessory === true;
+    this.functionsAccessory = config.functionsAccessory === true;
     this.fullScanCachePath = STORAGE_PATH + '/sonytv-fullscan-' + this.name + '.json';
     this.capabilitiesPath = STORAGE_PATH + '/sonytv-capabilities-' + this.name + '.json';
     // Device capabilities — loaded from file or detected at runtime
@@ -622,15 +711,16 @@ class SonyTV {
       'setAudioMute': '/sony/audio'
     };
     
-    // HomeKit has a hardcoded limit of 100 services per accessory
-    // This includes: 1 TV service + 1 Speaker service + N Input Sources
-    // Maximum input sources = 100 - 2 = 98
-    // User can configure a lower limit if desired
-    this.maxInputSources = config.maxInputSources || 98;
-    if (this.maxInputSources > 98) {
-      this.log('[' + this.name + '] ⚠️  WARNING: maxInputSources set to ' + this.maxInputSources + ' but HomeKit limit is 98');
-      this.log('[' + this.name + '] ⚠️  Reducing to 98 to avoid crashes');
-      this.maxInputSources = 98;
+    // HAP-NodeJS refuses more than 100 services per accessory. The count
+    // includes the AccessoryInformation service that every accessory carries,
+    // plus Television and TelevisionSpeaker, so at most 100 - 3 = 97 input
+    // sources fit. (Up to v1.4.20 the cap was 98, which made the 101st service
+    // throw: on a new TV the speaker service was silently dropped, on an
+    // existing one the scan got stuck and channels never refreshed again.)
+    this.maxInputSources = config.maxInputSources || MAX_HOMEKIT_INPUTS;
+    if (this.maxInputSources > MAX_HOMEKIT_INPUTS) {
+      this.log('[' + this.name + '] ⚠️  maxInputSources set to ' + this.maxInputSources + ' but the HomeKit limit is ' + MAX_HOMEKIT_INPUTS + ' — using ' + MAX_HOMEKIT_INPUTS);
+      this.maxInputSources = MAX_HOMEKIT_INPUTS;
     }
     
     // When true, HDMI inputs that are physically disconnected are hidden in HomeKit
@@ -640,7 +730,7 @@ class SonyTV {
 
     if (this.debug) this.log('[' + this.name + '] TV Source configured: ' + this.tvsource);
     if (this.debug) this.log('[' + this.name + '] Channel update rate: ' + this.channelupdaterate + 'ms');
-    if (this.debug) this.log('[' + this.name + '] Max input sources: ' + this.maxInputSources + ' (HomeKit limit: 98)');
+    if (this.debug) this.log('[' + this.name + '] Max input sources: ' + this.maxInputSources + ' (HomeKit limit: ' + MAX_HOMEKIT_INPUTS + ')');
     if (this.debug) this.log('[' + this.name + '] Hide disconnected inputs: ' + this.hideDisconnectedInputs);
 
     // Authentication and state variables
@@ -725,7 +815,12 @@ class SonyTV {
   getFreeIdentifier() {
     var id = 1;
     var keys = [...this.inputSourceMap.keys()];
-    while (keys.includes(id)) {
+    // v1.4.21: never hand out an identifier that belonged to an input removed
+    // while Homebridge is running (e.g. swapping HDMI 1 for HDMI 3 in one
+    // save): the Home app would briefly associate the old input's name and
+    // settings with the new one.
+    var retired = this._retiredIdentifiers || new Set();
+    while (keys.includes(id) || retired.has(id)) {
       id++;
     }
     return id;
@@ -793,6 +888,8 @@ class SonyTV {
 
     this.updateStatus();
     this.setupVolumeAccessory();
+    this.setupControlsAccessory();
+    this._initSideAccessories();
     if (this.debug) this.log('[' + this.name + '] Auth + status polling started');
   }
   // Get the services (TV service, channels) from a restored HomeKit accessory
@@ -864,6 +961,14 @@ class SonyTV {
     this.tvService
       .getCharacteristic(Characteristic.RemoteKey)
       .on('set', this.setRemoteKey.bind(this));
+    // v1.4.21: "View TV Settings" in the iOS remote / Home app → opens the
+    // TV's Options menu.
+    this.tvService
+      .getCharacteristic(Characteristic.PowerModeSelection)
+      .on('set', (value, callback) => {
+        this.sendRemoteFunction('Options');
+        callback(null);
+      });
     this.speakerService
       .setCharacteristic(Characteristic.Active, Characteristic.Active.ACTIVE);
     this.speakerService
@@ -944,15 +1049,20 @@ class SonyTV {
       if (typeof done === 'function') done([new Error('no MAC configured')]);
       return;
     }
-    var dest = (that.wolMode === 'directed-broadcast')
-      ? (that.woladdress || '255.255.255.255')
-      : that.ip; // 'auto' uses unicast to the TV's IP
+    // v1.4.21: 'auto' now sends every packet BOTH as unicast to the TV's IP and
+    // to the subnet broadcast derived from it. Unicast alone often never left
+    // the host: while the TV's NIC sleeps, the host (or the router, across
+    // VLANs) has no ARP entry for the TV any more, so the packet is dropped.
+    var dests = (that.wolMode === 'directed-broadcast')
+      ? [that.woladdress || '255.255.255.255']
+      : [that.ip, that.woladdress].filter(function (d, i, a) { return !isNull(d) && d !== '' && a.indexOf(d) === i; });
+    var dest = dests.join(' + ');
     var count = that.wolBurstCount;
     var interval = that.wolBurstInterval;
     var errors = [];
     var idx = 0;
 
-    var destLabel = (that.wolMode === 'directed-broadcast') ? 'subnet broadcast' : 'unicast to TV';
+    var destLabel = (that.wolMode === 'directed-broadcast') ? 'subnet broadcast' : 'unicast to TV + subnet broadcast';
     that.log('[' + that.name + '] [POWER] ⚡ WOL burst: sending ' + count + ' magic packets to mac=' + that._sanitize(that.mac, 'mac') + ' dest=' + dest + ' [' + destLabel + '] (mode=' + that.wolMode + ', interval=' + interval + 'ms)');
 
     var sendNext = function () {
@@ -967,29 +1077,38 @@ class SonyTV {
       }
       idx++;
       var packetIdx = idx;
-      try {
-        wol.wake(that.mac, { address: dest }, function (err) {
-          if (err) {
-            errors.push(err);
-            if (that.debug) that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' FAILED: ' + err);
-          } else {
-            if (that.debug) that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' sent to ' + dest);
-          }
-          if (packetIdx >= count) {
-            sendNext();
-          } else {
-            setTimeout(sendNext, interval);
-          }
-        });
-      } catch (e) {
-        errors.push(e);
-        if (that.debug) that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' threw: ' + e);
+      // One "packet" = one magic packet to each destination. It counts as sent
+      // if at least one destination accepted it.
+      var pending = dests.length;
+      var packetErrors = [];
+      var afterPacket = function () {
+        if (packetErrors.length === dests.length) errors.push(packetErrors[0]);
         if (packetIdx >= count) {
           sendNext();
         } else {
           setTimeout(sendNext, interval);
         }
-      }
+      };
+      dests.forEach(function (d) {
+        var finished = false;
+        var finishOne = function (err) {
+          if (finished) return;
+          finished = true;
+          if (err) {
+            packetErrors.push(err);
+            if (that.debug) that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' to ' + d + ' FAILED: ' + err);
+          } else if (that.debug) {
+            that.log('[' + that.name + '] [POWER] ⚡ WOL packet ' + packetIdx + '/' + count + ' sent to ' + d);
+          }
+          pending--;
+          if (pending === 0) afterPacket();
+        };
+        try {
+          wol.wake(that.mac, { address: d }, finishOne);
+        } catch (e) {
+          finishOne(e);
+        }
+      });
     };
 
     sendNext();
@@ -1014,7 +1133,7 @@ class SonyTV {
       attempt++;
       var elapsed = Date.now() - startedAt;
       if (elapsed >= maxMs) {
-        that.log('[' + that.name + '] [POWER] ⏱️  REST alive wait timed out after ' + elapsed + 'ms (' + attempt + ' attempts), TV did not become alive');
+        that.log('[' + that.name + '] [POWER] ⏱️  REST alive wait timed out after ' + elapsed + 'ms (' + attempt + ' attempts), TV not reachable yet (regular polling continues; raise wakeWaitMaxMs if your TV boots slower)');
         if (typeof done === 'function') done(false, elapsed);
         return;
       }
@@ -1154,6 +1273,8 @@ class SonyTV {
       'tvsource: ' + (this.tvsource || '<none>'),
       'externalaccessory: ' + (this.externalaccessory === true),
       'volumeAccessory: ' + this.volumeAccessory,
+      'separate tiles: apps=' + this.appsAccessory + ' recordings=' + this.recordingsAccessory + ' functions=' + this.functionsAccessory,
+      'controlsAccessory: ' + this.controlsAccessory + (this.controlsAccessory ? ' (' + this.controlsScenes.join(', ') + ')' : ''),
       'volumeUI: ' + this.volumeUI,
       'hideDisconnectedInputs: ' + (this.hideDisconnectedInputs === true),
       'maxInputSources: ' + this.maxInputSources,
@@ -1251,6 +1372,7 @@ class SonyTV {
         const raw = fs.readFileSync(this.capabilitiesPath, 'utf8');
         const saved = JSON.parse(raw);
         this.capabilities = Object.assign(this.capabilities, saved);
+        if (saved && saved.remoteKeys && typeof saved.remoteKeys === 'object') this._irccCodes = saved.remoteKeys;
         if (this.debug) this.log('[' + this.name + '] ✓ Capabilities loaded from ' + this.capabilitiesPath);
       }
     } catch (e) {
@@ -1467,6 +1589,188 @@ class SonyTV {
     };
   }
 
+  // v1.4.21: one Sony JSON-RPC call → cb(err, result). err is a short string
+  // ('tv-off', 'error 12: …', 'http …'); result is json.result.
+  tvCall(endpoint, method, version, params, cb) {
+    const post = JSON.stringify({ id: 30, method: method, version: version, params: params || [] });
+    this.makeHttpRequest(
+      (err) => cb('unreachable: ' + (err && err.message ? err.message : err), null),
+      (data) => {
+        try {
+          const j = JSON.parse(data);
+          if (j.error) return cb('error ' + j.error[0] + ': ' + j.error[1], null);
+          if (j.auth_url) return cb('authentication required', null);
+          cb(null, j.result);
+        } catch (e) { cb('invalid response', null); }
+      },
+      endpoint, post, false
+    );
+  }
+
+  // Run several tvCall()s in parallel; cb(results) with {key: {err, result}}.
+  tvCalls(calls, cb) {
+    const out = {};
+    const keys = Object.keys(calls);
+    let pending = keys.length;
+    if (!pending) return cb(out);
+    keys.forEach((k) => {
+      const c = calls[k];
+      this.tvCall(c[0], c[1], c[2], c[3], (err, result) => {
+        out[k] = { err: err, result: result };
+        if (--pending === 0) cb(out);
+      });
+    });
+  }
+
+  // GET /api/diagnostics — live read of useful TV settings (read-only).
+  apiDiagnostics(req, res) {
+    const self = this;
+    if (!this.power) return this.sendJSON(res, { success: true, tvOn: false });
+    this.tvCalls({
+      network: ['/sony/system', 'getNetworkSettings', '1.0', []],
+      wol: ['/sony/system', 'getWolMode', '1.0', []],
+      powerSaving: ['/sony/system', 'getPowerSavingMode', '1.0', []],
+      time: ['/sony/system', 'getCurrentTime', '1.0', []],
+      scene: ['/sony/videoScreen', 'getSceneSetting', '1.0', []],
+      recording: ['/sony/recording', 'getRecordingStatus', '1.0', []],
+      playing: ['/sony/avContent', 'getPlayingContentInfo', '1.0', []]
+    }, (r) => {
+      const first = (x) => (x && Array.isArray(x.result) ? x.result[0] : null);
+      const net = r.network && Array.isArray(r.network.result) && Array.isArray(r.network.result[0]) ? r.network.result[0][0] : null;
+      const scene = first(r.scene);
+      self.sendJSON(res, {
+        success: true,
+        tvOn: true,
+        network: net ? { ip: net.ipAddrV4, netmask: net.netmask, gateway: net.gateway, mac: net.hwAddr, dns: net.dns, netif: net.netif } : null,
+        wolEnabled: first(r.wol) ? first(r.wol).enabled === true : null,
+        powerSavingMode: first(r.powerSaving) ? first(r.powerSaving).mode : null,
+        tvTime: first(r.time),
+        pictureMode: scene ? (scene.currentValue || scene.current || null) : null,
+        pictureModes: scene && Array.isArray(scene.candidate) ? scene.candidate.map((c) => c.value) : [],
+        recordingStatus: first(r.recording) ? first(r.recording).status : null,
+        playing: first(r.playing),
+        usbRecordingDrive: !!self._hasRecStorage,
+        remoteKeys: self._irccCodes ? Object.keys(self._irccCodes).length : 0
+      });
+    });
+  }
+
+  // GET /api/recordings — recordings on the TV's USB drive (live), scheduled
+  // recordings and history. Available only when a USB drive is connected.
+  apiRecordings(req, res) {
+    const self = this;
+    if (!this.power) return this.sendJSON(res, { success: true, tvOn: false, usb: !!self._hasRecStorage });
+    this.detectRecStorage((present) => {
+      if (!present) return self.sendJSON(res, { success: true, tvOn: true, usb: false });
+      const list = [];
+      const page = (stIdx) => {
+        const v = self.getApiVersion('getContentList', '1.0');
+        const prm = compareVersions(v, '1.5') >= 0 ? { uri: 'usb:recStorage', stIdx: stIdx, cnt: 50 } : { source: 'usb:recStorage', stIdx: stIdx, cnt: 50 };
+        self.tvCall('/sony/avContent', 'getContentList', v, [prm], (err, result) => {
+          const rows = !err && result && Array.isArray(result[0]) ? result[0] : [];
+          rows.forEach((x) => list.push(x));
+          if (rows.length === 50 && stIdx < 1000) return page(stIdx + 50);
+          self.tvCalls({
+            status: ['/sony/recording', 'getRecordingStatus', '1.0', []],
+            schedules: ['/sony/recording', 'getScheduleList', '1.0', [{ stIdx: 0, cnt: 100 }]],
+            history: ['/sony/recording', 'getHistoryList', '1.0', [{ stIdx: 0, cnt: 50 }]]
+          }, (r) => {
+            const arr = (x) => (x && Array.isArray(x.result) && Array.isArray(x.result[0]) ? x.result[0] : []);
+            self._lastRecList = list.map((x) => ({ uri: x.uri, isProtected: x.isProtected === true }));
+            self.sendJSON(res, {
+              success: true, tvOn: true, usb: true,
+              status: r.status && r.status.result ? r.status.result[0].status : null,
+              recordings: list.map((x) => ({
+                uri: x.uri, title: x.title, channelName: x.channelName || '', startDateTime: x.startDateTime || '',
+                durationSec: x.durationSec || 0, isAlreadyPlayed: x.isAlreadyPlayed === true, isProtected: x.isProtected === true
+              })),
+              schedules: arr(r.schedules),
+              history: arr(r.history)
+            });
+          });
+        });
+      };
+      page(0);
+    });
+  }
+
+  // POST /api/recordings/{play|protect|delete} — body { uri, isProtected? }.
+  // Only recordings on the TV's USB drive (usb:recStorage URIs) are accepted.
+  apiRecordingAction(req, res, action) {
+    const self = this;
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', () => {
+      let p;
+      try { p = JSON.parse(body || '{}'); } catch (e) { return self.sendJSON(res, { success: false, message: 'Invalid JSON' }); }
+      const uri = typeof p.uri === 'string' ? p.uri : '';
+      if (uri.indexOf('usb:recStorage?') !== 0) return self.sendJSON(res, { success: false, message: 'Not a recording' });
+      if (!self.power && action !== 'play') return self.sendJSON(res, { success: false, message: 'Switch the TV on first' });
+      const done = (err) => {
+        if (err) return self.sendJSON(res, { success: false, message: err });
+        self.log('[' + self.name + '] Recording ' + action + ': ' + uri);
+        self.sendJSON(res, { success: true });
+      };
+      if (action === 'play') {
+        // setPlayContent with canTurnTvOn: wakes the TV first if needed.
+        self.setPlayContent(uri);
+        return self.sendJSON(res, { success: true });
+      }
+      if (action === 'protect') return self.tvCall('/sony/avContent', 'setDeleteProtection', '1.0', [{ uri: uri, isProtected: p.isProtected === true }], (e) => {
+        if (!e) (self._lastRecList || []).forEach((x) => { if (x.uri === uri) x.isProtected = p.isProtected === true; });
+        done(e);
+      });
+      if (action === 'delete') {
+        const known = (self._lastRecList || []).find((x) => x.uri === uri);
+        if (known && known.isProtected) return self.sendJSON(res, { success: false, message: 'Protected recording: remove the protection first' });
+        return self.tvCall('/sony/avContent', 'deleteContent', '1.0', [{ uri: uri }], (e) => {
+          done(e);
+          // A deleted recording that is also a HomeKit input disappears at the next scan.
+          if (!e && (self.recordingsAccessory || (self.uriToInputSource && self.uriToInputSource.get(uri)))) setTimeout(() => self.receiveSources(true), 3000);
+        });
+      }
+      self.sendJSON(res, { success: false, message: 'Unknown action' });
+    });
+  }
+
+  // v1.4.21: compact status for the web UI header (no secrets).
+  getUiStatus() {
+    var cookieExists = false;
+    try { cookieExists = fs.existsSync(this.cookiepath); } catch (e) {}
+    var hasCookieInMemory = (!!this.cookie && String(this.cookie).length > 0);
+    var paired = (this.authok === true) || ((cookieExists || hasCookieInMemory) && this.awaitingPin !== true);
+    var iface = this.capabilities.interface || {};
+    var sys = this.capabilities.system || {};
+    if (!SonyTV._pkgVersion) {
+      try { SonyTV._pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version; } catch (e) { SonyTV._pkgVersion = ''; }
+    }
+    return {
+      success: true,
+      pluginVersion: SonyTV._pkgVersion,
+      tv: {
+        name: this.name,
+        ip: this.ip,
+        model: sys.model || iface.modelName || '',
+        productName: iface.productName || '',
+        interfaceVersion: iface.interfaceVersion || '',
+        generation: sys.generation || '',
+        serial: sys.serial || ''
+      },
+      power: this.power === true,
+      authMode: isNull(this.psk) ? 'cookie' : 'psk',
+      paired: paired,
+      authenticated: this.authok === true,
+      awaitingPin: this.awaitingPin === true,
+      homekitInputs: this.channelServices ? this.channelServices.length : 0,
+      tiles: { apps: this.appsAccessory, recordings: this.recordingsAccessory, functions: this.functionsAccessory },
+      maxInputSources: this.maxInputSources,
+      channelSelector: this.enableChannelSelector,
+      externalAccessory: this.accessory && this.accessory.context ? this.accessory.context.isexternal === true : false,
+      apiVersions: this.capabilities.apiVersions || {},
+      detectedAt: this.capabilities.detectedAt || null
+    };
+  }
+
   setupVolumeAccessory() {
     const that = this;
     if (!that.volumeAccessory) return;
@@ -1500,7 +1804,326 @@ class SonyTV {
     acc.addService(bulb);
     that.volumeAccessoryInstance = acc;
     that.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [acc]);
-    that.log('[' + that.name + '] 🔊 Volume accessory published: ' + volName);
+    // v1.4.21: log the HomeKit ID (issue #7). The ID is derived from the TV
+    // name: after renaming or re-adding a TV, an old pairing kept by Homebridge
+    // for the same ID makes the Home app answer "Accessory already in another
+    // home". Knowing the ID lets the user remove exactly that pairing in
+    // Homebridge UI → Settings → "Unpair Bridges / Cameras / TVs / External Accessories".
+    that.log('[' + that.name + '] 🔊 Volume accessory published: ' + volName + ' (HomeKit ID ' + homeKitIdFor(uuid) + ')');
+  }
+
+  // v1.4.21: optional external accessory "<name> Controls" with one switch per
+  // picture mode (mutually exclusive; switching one off returns to "auto") and
+  // a "Screen off" switch (power saving: picture off, sound keeps playing).
+  setupControlsAccessory() {
+    const that = this;
+    if (!that.controlsAccessory) return;
+    const accName = that.name + ' Controls';
+    const uuid = UUIDGen.generate(that.name + '-SonyTV-Controls');
+    const acc = new Accessory(accName, uuid, that.platform.api.hap.Categories.SWITCH);
+    const pretty = (v) => v.replace(/([a-z])([A-Z0-9])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
+    that._sceneSwitches = {};
+    const revert = (sw, val) => setTimeout(() => sw.updateCharacteristic(Characteristic.On, val), 800);
+
+    that.controlsScenes.forEach((scene) => {
+      const label = 'Picture ' + pretty(scene);
+      const sw = new Service.Switch(label, 'scene-' + scene);
+      if (Characteristic.ConfiguredName) { try { sw.setCharacteristic(Characteristic.ConfiguredName, label); } catch (e) {} }
+      sw.getCharacteristic(Characteristic.On).on('set', (value, callback) => {
+        callback(null);
+        if (!that.power) { revert(sw, false); return; }
+        const target = value ? scene : 'auto';
+        that.tvCall('/sony/videoScreen', 'setSceneSetting', '1.0', [{ value: target }], (err) => {
+          if (err) {
+            that.log.warn('[' + that.name + '] Picture mode "' + target + '" not accepted by the TV: ' + err);
+            revert(sw, !value);
+            return;
+          }
+          that.log('[' + that.name + '] 🎬 Picture mode: ' + target);
+          that._applySceneState(target);
+        });
+      });
+      acc.addService(sw);
+      that._sceneSwitches[scene] = sw;
+    });
+
+    const scr = new Service.Switch('Screen off', 'screen-off');
+    if (Characteristic.ConfiguredName) { try { scr.setCharacteristic(Characteristic.ConfiguredName, 'Screen off'); } catch (e) {} }
+    scr.getCharacteristic(Characteristic.On).on('set', (value, callback) => {
+      callback(null);
+      if (!that.power) { revert(scr, false); return; }
+      that.tvCall('/sony/system', 'setPowerSavingMode', '1.0', [{ mode: value ? 'pictureOff' : 'off' }], (err) => {
+        if (err) {
+          that.log.warn('[' + that.name + '] Screen off not accepted by the TV: ' + err);
+          revert(scr, !value);
+          return;
+        }
+        that.log('[' + that.name + '] 🖥️ Screen ' + (value ? 'off (audio only)' : 'on'));
+      });
+    });
+    acc.addService(scr);
+    that._screenOffSwitch = scr;
+
+    that.controlsAccessoryInstance = acc;
+    that.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [acc]);
+    that.log('[' + that.name + '] 🎛️ Controls accessory published: ' + accName + ' (HomeKit ID ' + homeKitIdFor(uuid) + ')');
+  }
+
+  _applySceneState(current) {
+    if (!this._sceneSwitches) return;
+    Object.keys(this._sceneSwitches).forEach((k) => {
+      this._sceneSwitches[k].updateCharacteristic(Characteristic.On, !!this.power && k === current);
+    });
+  }
+
+  // Refresh the Controls switches from the TV (called from the status loop).
+  syncControlsAccessory(force) {
+    if (!this.controlsAccessoryInstance) return;
+    if (!this.power) {
+      this._applySceneState(null);
+      if (this._screenOffSwitch) this._screenOffSwitch.updateCharacteristic(Characteristic.On, false);
+      return;
+    }
+    const now = Date.now();
+    if (!force && this._lastControlsSync && now - this._lastControlsSync < 30000) return;
+    this._lastControlsSync = now;
+    this.tvCall('/sony/videoScreen', 'getSceneSetting', '1.0', [], (err, r) => {
+      if (!err && r && r[0]) this._applySceneState(r[0].currentValue || r[0].current || null);
+    });
+    this.tvCall('/sony/system', 'getPowerSavingMode', '1.0', [], (err, r) => {
+      if (!err && r && r[0] && this._screenOffSwitch) this._screenOffSwitch.updateCharacteristic(Characteristic.On, r[0].mode === 'pictureOff');
+    });
+  }
+
+  // ── v1.4.21: separate Home tiles for apps, recordings and TV functions ──────
+  _kindOf(ch) {
+    const uri = String(ch[1] || '');
+    if (uri.indexOf('ircc:') === 0) return 'fn';
+    if (uri.indexOf('usb:recStorage') === 0) return 'rec';
+    if (ch[2] === Characteristic.InputSourceType.APPLICATION) return 'app';
+    return 'main';
+  }
+
+  // Channels that stay on the main TV tile.
+  _mainTvChannels(list) {
+    if (!this.appsAccessory && !this.recordingsAccessory && !this.functionsAccessory) return list;
+    return (list || []).filter((ch) => {
+      const k = this._kindOf(ch);
+      if (k === 'app') return !this.appsAccessory;
+      if (k === 'rec') return !this.recordingsAccessory;
+      if (k === 'fn') return !this.functionsAccessory;
+      return true;
+    });
+  }
+
+  _readFullScanCache() {
+    try {
+      const c = JSON.parse(fs.readFileSync(this.fullScanCachePath, 'utf8'));
+      if (c && c.recMeta && !this._recMeta) this._recMeta = c.recMeta;
+      return Array.isArray(c.channels) ? c.channels : [];
+    } catch (e) { return []; }
+  }
+
+  // At start: build the tiles from the last scan, so they exist (with their
+  // entries) even when the TV is off.
+  _initSideAccessories() {
+    if (!this.appsAccessory && !this.recordingsAccessory && !this.functionsAccessory) return;
+    const full = this._readFullScanCache();
+    const selUris = this.getSelectedChannelUris();
+    const picked = selUris.length ? this.getSelectedChannelsFromList(full, selUris) : full;
+    this._refreshSideAccessories(full, picked);
+  }
+
+  // full: everything the TV offers; picked: the user's selection.
+  // Apps and functions: the selected ones (all of them when none is selected).
+  // Recordings: all of them, newest first (they change often).
+  _refreshSideAccessories(full, picked) {
+    try {
+      full = Array.isArray(full) ? full : [];
+      picked = Array.isArray(picked) ? picked : [];
+      const of = (arr, k) => arr.filter((c) => this._kindOf(c) === k);
+      if (this.appsAccessory) {
+        const sel = of(picked, 'app');
+        this._updateSideTv('apps', sel.length ? sel : of(full, 'app'));
+      }
+      if (this.recordingsAccessory) {
+        const meta = this._recMeta || {};
+        const recs = of(full, 'rec').slice().sort((a, b) => String((meta[b[1]] || {}).startDateTime || '').localeCompare(String((meta[a[1]] || {}).startDateTime || '')));
+        // Several recordings of the same programme: add the date to tell them apart.
+        const count = {};
+        recs.forEach((c) => { count[c[0]] = (count[c[0]] || 0) + 1; });
+        this._updateSideTv('recs', recs.map((c) => {
+          const m = meta[c[1]] || {};
+          const d = /^(\d{4})-(\d\d)-(\d\d)/.exec(m.startDateTime || '');
+          return [count[c[0]] > 1 && d ? c[0] + ' ' + d[3] + '-' + d[2] + '-' + d[1] : c[0], c[1], c[2]];
+        }));
+      }
+      if (this.functionsAccessory) {
+        const sel = of(picked, 'fn');
+        this._updateFunctions(sel.length ? sel : of(full, 'fn'));
+      }
+    } catch (e) {
+      this.log.warn('[' + this.name + '] Could not update the separate Home tiles: ' + (e && e.stack ? e.stack : e));
+    }
+  }
+
+  // HAP-safe display name (the Name characteristic must start and end with a
+  // letter or digit); the full title stays in ConfiguredName.
+  _hapName(s) {
+    let n = String(s || '').replace(/[^\p{L}\p{N} '.,\-&()]/gu, ' ').replace(/\s+/g, ' ').trim();
+    n = n.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    return (n || 'Input').slice(0, 64).trim();
+  }
+
+  _sideIdsPath(kind) { return STORAGE_PATH + '/sonytv-' + kind + '-' + this.name + '.json'; }
+
+  _sideTv(kind) {
+    this._sides = this._sides || {};
+    if (this._sides[kind]) return this._sides[kind];
+    const accName = this.name + ' ' + (kind === 'apps' ? 'Apps' : 'Recordings');
+    const uuid = UUIDGen.generate(this.name + '-SonyTV-' + kind);
+    const acc = new Accessory(accName, uuid, this.platform.api.hap.Categories.TELEVISION);
+    const info = acc.getService(Service.AccessoryInformation);
+    if (info) info.setCharacteristic(Characteristic.Manufacturer, 'Sony').setCharacteristic(Characteristic.Model, (this.capabilities.system && this.capabilities.system.model) || 'Bravia');
+    const tv = new Service.Television(accName, 'tv-' + kind);
+    tv.setCharacteristic(Characteristic.ConfiguredName, accName);
+    tv.setCharacteristic(Characteristic.SleepDiscoveryMode, Characteristic.SleepDiscoveryMode.ALWAYS_DISCOVERABLE);
+    tv.getCharacteristic(Characteristic.Active)
+      .on('get', (cb) => cb(null, this.power ? 1 : 0))
+      .on('set', (v, cb) => this.setPowerState(v, cb));
+    const side = { kind: kind, acc: acc, tv: tv, inputs: new Map(), byId: new Map(), ids: {}, published: false, name: accName };
+    try { side.ids = JSON.parse(fs.readFileSync(this._sideIdsPath(kind), 'utf8')) || {}; } catch (e) { side.ids = {}; }
+    tv.setCharacteristic(Characteristic.ActiveIdentifier, 0);
+    tv.getCharacteristic(Characteristic.ActiveIdentifier)
+      .on('get', (cb) => cb(null, this._sideActiveId(side)))
+      .on('set', (id, cb) => {
+        cb(null);
+        const uri = side.byId.get(id);
+        if (!uri) return; // placeholder entry
+        this.currentUri = uri;
+        if (kind === 'apps') this.setActiveApp(uri);
+        else this.setPlayContent(uri);
+      });
+    tv.getCharacteristic(Characteristic.RemoteKey).on('set', this.setRemoteKey.bind(this));
+    tv.getCharacteristic(Characteristic.PowerModeSelection).on('set', (v, cb) => { this.sendRemoteFunction('Options'); cb(null); });
+    acc.addService(tv);
+    this._sides[kind] = side;
+    return side;
+  }
+
+  _sideActiveId(side) {
+    const u = this.currentUri;
+    if (!u || !this.power) return 0;
+    for (const [id, uri] of side.byId) { if (uri === u) return id; }
+    return 0;
+  }
+
+  _updateSideTv(kind, list) {
+    const side = this._sideTv(kind);
+    const PLACEHOLDER = 'placeholder:' + kind;
+    let want = list.slice(0, MAX_HOMEKIT_INPUTS);
+    if (want.length === 0) {
+      // A TV tile with no inputs looks broken in Home: show why it is empty.
+      want = [[kind === 'apps' ? 'No apps' : 'No recordings', PLACEHOLDER, Characteristic.InputSourceType.OTHER]];
+    }
+    const wantUris = new Set(want.map((c) => c[1]));
+    let changed = false;
+    side.inputs.forEach((svc, uri) => {
+      if (wantUris.has(uri)) return;
+      side.tv.removeLinkedService(svc);
+      side.acc.removeService(svc);
+      side.inputs.delete(uri);
+      side.byId.delete(svc.getCharacteristic(Characteristic.Identifier).value);
+      changed = true;
+    });
+    const used = new Set(Object.keys(side.ids).map((u) => side.ids[u]));
+    let next = 1;
+    want.forEach((c) => {
+      const uri = c[1];
+      const label = String(c[0] || uri).slice(0, 64);
+      const ex = side.inputs.get(uri);
+      if (ex) {
+        if (ex.getCharacteristic(Characteristic.ConfiguredName).value !== label) ex.updateCharacteristic(Characteristic.ConfiguredName, label);
+        return;
+      }
+      let id = uri === PLACEHOLDER ? 9999 : side.ids[uri];
+      if (!id) {
+        while (used.has(next)) next++;
+        id = next; used.add(id); side.ids[uri] = id;
+      }
+      const type = kind === 'apps' ? Characteristic.InputSourceType.APPLICATION : Characteristic.InputSourceType.OTHER;
+      const svc = new Service.InputSource(this._hapName(label), uri);
+      svc.setCharacteristic(Characteristic.Identifier, id)
+        .setCharacteristic(Characteristic.ConfiguredName, label)
+        .setCharacteristic(Characteristic.IsConfigured, Characteristic.IsConfigured.CONFIGURED)
+        .setCharacteristic(Characteristic.InputSourceType, type)
+        .setCharacteristic(Characteristic.CurrentVisibilityState, Characteristic.CurrentVisibilityState.SHOWN);
+      try { side.acc.addService(svc); } catch (e) { this.log.warn('[' + this.name + '] Cannot add "' + label + '" to ' + side.name + ': ' + e.message); return; }
+      side.tv.addLinkedService(svc);
+      side.inputs.set(uri, svc);
+      if (uri !== PLACEHOLDER) side.byId.set(id, uri);
+      changed = true;
+    });
+    if (changed) {
+      try { fs.writeFileSync(this._sideIdsPath(kind), JSON.stringify(side.ids)); } catch (e) {}
+      const real = want.filter((c) => c[1] !== PLACEHOLDER).length;
+      this.log('[' + this.name + '] ' + (kind === 'apps' ? '📱' : '📼') + ' ' + side.name + ': ' + real + ' ' + (kind === 'apps' ? 'apps' : 'recordings'));
+    }
+    if (!side.published) {
+      side.published = true;
+      this.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [side.acc]);
+      this.log('[' + this.name + '] Published ' + side.name + ' (HomeKit ID ' + homeKitIdFor(side.acc.UUID) + ')');
+    }
+  }
+
+  // "<name> Functions": one momentary button (switch that turns itself off)
+  // per remote function.
+  _updateFunctions(list) {
+    if (!this._fnSide) {
+      const accName = this.name + ' Functions';
+      const uuid = UUIDGen.generate(this.name + '-SonyTV-functions');
+      this._fnSide = { acc: new Accessory(accName, uuid, this.platform.api.hap.Categories.SWITCH), sw: new Map(), published: false, name: accName };
+    }
+    const side = this._fnSide;
+    const want = new Map(list.map((c) => [c[1], c[0]]));
+    let changed = false;
+    side.sw.forEach((svc, uri) => {
+      if (want.has(uri)) return;
+      side.acc.removeService(svc); side.sw.delete(uri); changed = true;
+    });
+    want.forEach((label, uri) => {
+      if (side.sw.has(uri)) return;
+      const key = uri.slice(5);
+      const svc = new Service.Switch(this._hapName(label), 'fn-' + key);
+      if (Characteristic.ConfiguredName) { try { svc.setCharacteristic(Characteristic.ConfiguredName, label); } catch (e) {} }
+      svc.getCharacteristic(Characteristic.On)
+        .on('get', (cb) => cb(null, false))
+        .on('set', (v, cb) => {
+          cb(null);
+          if (v) {
+            if (this.power) this.sendRemoteFunction(key);
+            setTimeout(() => svc.updateCharacteristic(Characteristic.On, false), 1000);
+          }
+        });
+      try { side.acc.addService(svc); } catch (e) { return; }
+      side.sw.set(uri, svc); changed = true;
+    });
+    if (changed) this.log('[' + this.name + '] 🔘 ' + side.name + ': ' + Array.from(want.values()).join(', '));
+    if (!side.published && side.sw.size > 0) {
+      side.published = true;
+      this.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [side.acc]);
+      this.log('[' + this.name + '] Published ' + side.name + ' (HomeKit ID ' + homeKitIdFor(side.acc.UUID) + ')');
+    }
+  }
+
+  // Keep the separate TV tiles' on/off and current entry in step with the TV.
+  _syncSideState() {
+    if (!this._sides) return;
+    Object.keys(this._sides).forEach((k) => {
+      const side = this._sides[k];
+      side.tv.updateCharacteristic(Characteristic.Active, this.power ? 1 : 0);
+      side.tv.updateCharacteristic(Characteristic.ActiveIdentifier, this._sideActiveId(side));
+    });
   }
 
   updateStatus() {
@@ -1512,12 +2135,22 @@ class SonyTV {
       that.getPowerState(null);
       that.pollPlayContent();
       that.pollExternalInputsStatus();
+      // v1.4.21: safety net — TV is on but the cookie registration never
+      // succeeded (e.g. transient error at boot). Throttled inside.
+      if (that.power === true && that.authok !== true) {
+        that._requestReRegistration('TV is on but not authenticated');
+      }
+      if (that.authok === true || that.power !== true) that.syncControlsAccessory(false);
+      that._syncSideState();
       that.updateStatus();
     }, interval);
   }
   // Check if we already registered with the TV and authenticate if needed
   checkRegistration() {
     const self = this;
+    // v1.4.21: every registration attempt (boot, web UI, retry) is timestamped
+    // so _requestReRegistration() never overlaps a call already in flight.
+    this._lastRegistrationAttempt = Date.now();
     if (this.debug) this.log('[' + this.name + '] checkRegistration() called');
 
     // PSK mode: authentication is handled by the X-Auth-PSK header on every request.
@@ -1575,6 +2208,7 @@ class SonyTV {
     if (this.debug) this.log('[' + this.name + '] Sending registration check to ' + this.ip);
     
     var onError = function (err) {
+      self._lastRegistrationUnreachable = true;
       self.log('[' + self.name + '] Auth error: ' + err);
       if (self.debug) {
         self.log('[' + self.name + '] 🔑 PAIRING TRACE: network/transport error during actRegister: ' + err);
@@ -1584,6 +2218,7 @@ class SonyTV {
     };
     
     var onSucces = function (chunk) {
+      self._lastRegistrationUnreachable = false;
       if (self.debug) self.log('[' + self.name + '] Auth response received');
       if (self.debug) self.log('[' + self.name + '] 🔑 PAIRING TRACE: TV response body=' + chunk);
       // Try to parse and log structured info
@@ -1660,6 +2295,13 @@ class SonyTV {
     if (identifier === null) {
       if (type === Characteristic.InputSourceType.TUNER) {
         // TV channels: keep identifiers stable and away from HDMI/App ids.
+        // v1.4.21: skip identifiers already in use or retired. After a
+        // restart the counter restarts at 1 while restored channels already
+        // own 1001, 1002…, so a newly added channel used to collide with them.
+        var _retired = this._retiredIdentifiers || new Set();
+        while (this.inputSourceMap.has(TV_IDENTIFIER_BASE + this.tvChannelCounter) || _retired.has(TV_IDENTIFIER_BASE + this.tvChannelCounter)) {
+          this.tvChannelCounter += 1;
+        }
         identifier = TV_IDENTIFIER_BASE + this.tvChannelCounter;
         this.tvChannelCounter += 1;
         if (this.debug) this.log('[' + this.name + '] Using TV-range identifier ' + identifier + ' for: ' + name);
@@ -1688,15 +2330,24 @@ class SonyTV {
       .setCharacteristic(Characteristic.CurrentVisibilityState, Characteristic.CurrentVisibilityState.SHOWN)
       .setCharacteristic(Characteristic.IsConfigured, Characteristic.IsConfigured.CONFIGURED)
       .setCharacteristic(Characteristic.InputSourceType, type);
-      
+
+    // v1.4.21: add to the accessory FIRST. If HAP refuses the service (e.g. the
+    // 100-services limit) nothing below runs, so channelServices, the maps and
+    // the TV linked services stay consistent with what HomeKit really has.
+    try {
+      this.accessory.addService(inputSource);
+    } catch (e) {
+      this.log('[' + this.name + '] ⚠️  Cannot add input "' + name + '": ' + (e && e.message ? e.message : e));
+      return false;
+    }
     this.channelServices.push(inputSource);
     this.tvService.addLinkedService(inputSource);
     this.uriToInputSource.set(uri, inputSource);
     // Also map a normalized key to handle URI variations returned by getPlayingContentInfo
     this.uriToInputSource.set(this.normalizeUri(uri), inputSource);
     this.inputSourceMap.set(identifier, inputSource);
-    this.accessory.addService(inputSource);
     if (this.debug) this.log('[' + this.name + '] ✓ Added input ' + name + ' with identifier ' + identifier);
+    return true;
   }
   haveChannel(source) {
     return this.scannedChannels.find(channel => (
@@ -1846,11 +2497,37 @@ class SonyTV {
     var changeDone = false;
     
     // HomeKit limit: max 100 services per accessory (HAP specification)
-    // This includes: 1 TV service + 1 Speaker service + N Input Sources
-    // Maximum input sources = 100 - 2 = 98
+    // This includes: AccessoryInformation + TV + Speaker + N Input Sources
+    // Maximum input sources = 100 - 3 = 97 (MAX_HOMEKIT_INPUTS)
     // User can configure via maxInputSources in config.json
     const MAX_CHANNELS = this.maxInputSources;
-    
+
+    // Remove channels that no longer exist on TV (or are no longer selected).
+    // v1.4.21: done BEFORE adding, so a swapped selection at the cap still has
+    // room for the new entries; and iterate over a copy, because splicing the
+    // array inside its own forEach skipped every other stale service.
+    let removedCount = 0;
+    this.channelServices.slice().forEach((service) => {
+      if (!self.haveChannel(service)) {
+        self.tvService.removeLinkedService(service);
+        self.accessory.removeService(service);
+        const _rid = service.getCharacteristic(Characteristic.Identifier).value;
+        if (!self._retiredIdentifiers) self._retiredIdentifiers = new Set();
+        self._retiredIdentifiers.add(_rid);
+        self.inputSourceMap.delete(_rid);
+        self.uriToInputSource.delete(service.subtype);
+        self.uriToInputSource.delete(self.normalizeUri(service.subtype));
+        self.log('[' + self.name + '] Removing channel: ' + service.getCharacteristic(Characteristic.ConfiguredName).value);
+        const idx = self.channelServices.indexOf(service);
+        if (idx >= 0) self.channelServices.splice(idx, 1);
+        changeDone = true;
+        removedCount++;
+      }
+    });
+    if (removedCount > 0) {
+      this.log('[' + this.name + '] ✓ Removed ' + removedCount + ' stale channels');
+    }
+
     // Add new channels discovered during scan
     if (this.debug) this.log('[' + this.name + '] Adding new channels...');
     if (this.debug) this.log('[' + this.name + '] HomeKit limit: maximum ' + MAX_CHANNELS + ' channel services allowed');
@@ -1865,7 +2542,7 @@ class SonyTV {
           self.log('[' + self.name + '] ⚠️  Cannot add more channels. Total scanned: ' + self.scannedChannels.length);
           self.log('[' + self.name + '] ⚠️  Currently have: ' + self.channelServices.length + ' services');
           self.log('[' + self.name + '] ⚠️  Skipping remaining ' + (self.scannedChannels.length - self.channelServices.length) + ' channels');
-          self.log('[' + self.name + '] ⚠️  To increase limit, set "maxInputSources" in config.json (max 98)');
+          self.log('[' + self.name + '] ⚠️  To increase limit, set "maxInputSources" in config.json (max ' + MAX_HOMEKIT_INPUTS + ')');
         }
         skippedCount++;
         return; // Skip this channel
@@ -1877,39 +2554,21 @@ class SonyTV {
         } else {
           if (self.debug) self.log('[' + self.name + '] Adding channel: ' + channel[0]);
         }
-        self.addInputSource(channel[0], channel[1], channel[2], null, (channel.length > 3 ? channel[3] : null));
-        changeDone = true;
-        addedCount++;
+        if (self.addInputSource(channel[0], channel[1], channel[2], null, (channel.length > 3 ? channel[3] : null)) !== false) {
+          changeDone = true;
+          addedCount++;
+        } else {
+          skippedCount++;
+        }
       }
     });
-    
+
     if (skippedCount > 0) {
       this.log('[' + this.name + '] ⚠️  Skipped ' + skippedCount + ' channels (HomeKit limit)');
     }
     this.log('[' + this.name + '] ✓ Added ' + addedCount + ' new channels');
     this.log('[' + this.name + '] Total channels now: ' + this.channelServices.length + ' / ' + MAX_CHANNELS);
-    
-    // Remove channels that no longer exist on TV. Only log if something is actually
-    // removed, to avoid spamming the log with "Removing stale channels..." every
-    // reconcile cycle (every channelupdaterate ms) when there is nothing to remove.
-    let removedCount = 0;
-    this.channelServices.forEach((service, idx, obj) => {
-      if (!self.haveChannel(service)) {
-        // TODO: make this function?
-        self.tvService.removeLinkedService(service);
-        self.accessory.removeService(service);
-        self.inputSourceMap.delete(service.getCharacteristic(Characteristic.Identifier).value);
-        self.uriToInputSource.delete(service.subtype);
-        self.log('[' + self.name + '] Removing channel: ' + service.getCharacteristic(Characteristic.ConfiguredName).value);
-        obj.splice(idx, 1);
-        changeDone = true;
-        removedCount++;
-      }
-    });
-    if (removedCount > 0) {
-      this.log('[' + this.name + '] ✓ Removed ' + removedCount + ' stale channels');
-    }
-    
+
     if (!this.accessory.context.isRegisteredInHomeKit) {
       if (this.debug) this.log('[' + this.name + '] Registering accessory in HomeKit');
       // add base services that haven't been added yet
@@ -1930,7 +2589,7 @@ class SonyTV {
         if (this.debug) this.log('[' + this.name + '] Registered as platform accessory');
         this.platform.api.registerPlatformAccessories('homebridge-bravia-enhanced', 'BraviaPlatform', [this.accessory]);
       } else {
-        this.log('[' + this.name + '] Publishing as external accessory');
+        this.log('[' + this.name + '] Publishing as external accessory (HomeKit ID ' + homeKitIdFor(this.accessory.UUID) + ')');
         try {
           const data = JSON.stringify(this.accessory.context);
           const contextPath = STORAGE_PATH + '/sonytv-context-' + this.accessory.context.config.name + '.json';
@@ -1997,6 +2656,21 @@ class SonyTV {
   finalizeChannelScan() {
     const fullScannedChannels = Array.isArray(this.scannedChannels) ? this.scannedChannels.slice() : [];
 
+    // v1.4.21: remote-control functions offered as selectable inputs (e.g.
+    // Teletext). They only appear when the TV answered the scan, and reach
+    // HomeKit only if the user selects them in the Channel Selector.
+    if (fullScannedChannels.length > 0) {
+      const keys = this._irccCodes || (this.capabilities && this.capabilities.remoteKeys) || null;
+      VIRTUAL_INPUTS.forEach((v) => {
+        const key = v.uri.slice(5);
+        if (keys && !keys[key]) return;                    // TV does not have this key
+        if (v.needs === 'usb' && !this._hasRecStorage) return; // recording needs a USB drive
+        if (!fullScannedChannels.some((c) => c[1] === v.uri)) {
+          fullScannedChannels.push([v.name, v.uri, Characteristic.InputSourceType.OTHER]);
+        }
+      });
+    }
+
     if (fullScannedChannels.length > 0) {
       this.saveFullScanCache(fullScannedChannels);
     } else if (this.debug) {
@@ -2022,17 +2696,89 @@ class SonyTV {
       this.log('[' + this.name + '] Full scan found ' + fullScannedChannels.length + ' channels; HomeKit will publish at most ' + this.maxInputSources + ' input sources');
     }
 
-    this.scannedChannels = channelsForHomeKit;
-    this.syncAccessory();
+    // v1.4.21: apps / TV functions / recordings go to their own Home tiles
+    // when those are enabled; the TV keeps the rest.
+    this._refreshSideAccessories(fullScannedChannels, channelsForHomeKit);
+    channelsForHomeKit = this._mainTvChannels(channelsForHomeKit);
 
-    // syncAccessory uses this.scannedChannels as the HomeKit reconcile source.
-    // Restore the complete scan immediately afterwards so /api/scan and debug
-    // summaries do not report only the selected HomeKit subset.
-    this.scannedChannels = fullScannedChannels;
+    this.scannedChannels = channelsForHomeKit;
+    try {
+      this.syncAccessory();
+    } catch (e) {
+      this.log('[' + this.name + '] ERROR while applying the scan to HomeKit: ' + (e && e.stack ? e.stack : e));
+    } finally {
+      // v1.4.21: never leave the scan flag latched. If syncAccessory threw,
+      // receivingSources stayed true forever and no further scan ever ran.
+      this.receivingSources = false;
+      // syncAccessory uses this.scannedChannels as the HomeKit reconcile source.
+      // Restore the complete scan immediately afterwards so /api/scan and debug
+      // summaries do not report only the selected HomeKit subset.
+      this.scannedChannels = fullScannedChannels;
+    }
+  }
+
+  // v1.4.21: keep exactly ONE periodic channel-refresh timer. Previously every
+  // call to receiveSources() scheduled its own follow-up, so each extra caller
+  // (pairing via the web UI, PSK re-check, cache-less boot) started another
+  // endless 30s loop running in parallel.
+  _ensureScanLoop() {
+    if (this._scanLoopTimer || !this.channelupdaterate) return;
+    this._scanLoopTimer = setTimeout(() => {
+      this._scanLoopTimer = null;
+      this.receiveSources();
+    }, this.channelupdaterate);
+  }
+
+  // v1.4.21: (re)run the cookie registration. Used when the TV comes on after
+  // it was unreachable at boot, when the TV is on but we are not authenticated,
+  // and when a request is refused with 401/403 (expired cookie). Throttled, and
+  // never while a PIN is pending (actRegister would pop the PIN on the TV again).
+  _requestReRegistration(reason, bypassIfUnreachable) {
+    if (!isNull(this.psk)) return;            // PSK: no cookie registration needed
+    if (this.awaitingPin === true) return;     // user has to enter the PIN first
+    var now = Date.now();
+    var minGap = 30000;
+    // When the TV has just come on and the previous attempt failed only because
+    // the TV was unreachable, retry immediately instead of waiting out the gap.
+    var bypass = (bypassIfUnreachable === true) && (this._lastRegistrationUnreachable === true);
+    if (!bypass && this._lastRegistrationAttempt && (now - this._lastRegistrationAttempt) < minGap) return;
+    this.log('[' + this.name + '] 🔑 Re-checking registration with the TV (' + reason + ')');
+    this.checkRegistration();
+  }
+
+  // v1.4.21: read the TV's external input list with getSourceList (only used
+  // when "sources" is not set in config). On any failure keep DEFAULT_SOURCES
+  // and try again at the next scan; done() is always called exactly once.
+  _resolveAutoSources(done) {
+    const that = this;
+    const post = '{"id":14,"method":"getSourceList","version":"1.0","params":[{"scheme":"extInput"}]}';
+    const fallback = (why) => {
+      if (that.debug) that.log('[' + that.name + '] getSourceList not available (' + why + '), using default sources: ' + DEFAULT_SOURCES.join(', '));
+      done();
+    };
+    that.makeHttpRequest(
+      (err) => fallback('error: ' + err),
+      (data) => {
+        try {
+          const json = JSON.parse(data);
+          const list = json && Array.isArray(json.result) && Array.isArray(json.result[0]) ? json.result[0] : null;
+          const srcs = (list || []).map((x) => x && x.source).filter((s) => typeof s === 'string' && s.indexOf('extInput:') === 0);
+          if (srcs.length === 0) return fallback('empty or error response');
+          that.sources = srcs;
+          that._autoSourcesResolved = true;
+          that.log('[' + that.name + '] External inputs reported by the TV: ' + srcs.join(', '));
+          done();
+        } catch (e) {
+          fallback('parse error: ' + e);
+        }
+      },
+      '/sony/avContent', post, false
+    );
   }
 
   // initialize a scan for new sources
   receiveSources(checkPower = null) {
+    this._ensureScanLoop();
     if (this.debug) this.log('[' + this.name + '] receiveSources checkPower=' + checkPower + ', this.power=' + this.power + ', this.receivingSources=' + this.receivingSources);
     if (checkPower === null)
       checkPower = this.power;
@@ -2053,7 +2799,29 @@ class SonyTV {
       }
     }
 
+    if (!this.receivingSources && checkPower && !this._scanPrepared) {
+      // v1.4.21: before each scan (one attempt per scan):
+      //  - "sources" not configured → ask the TV which external inputs it has
+      //  - read the remote-control key list once (for the "TV functions")
+      //  - check whether a USB recording drive is connected
+      this.receivingSources = true;
+      const steps = [];
+      if (this.sourcesAuto && !this._autoSourcesResolved) steps.push((next) => this._resolveAutoSources(next));
+      if (!this._irccCodes) steps.push((next) => this.loadRemoteCodes(next));
+      steps.push((next) => this.detectRecStorage(() => next()));
+      const run = () => {
+        const step = steps.shift();
+        if (step) { step(run); return; }
+        this.receivingSources = false;
+        this._scanPrepared = true;
+        this.receiveSources(true);
+      };
+      run();
+      return;
+    }
+
     if (!this.receivingSources && checkPower) {
+      this._scanPrepared = false;
       this.log('[' + this.name + '] Starting channel scan...');
       const that = this;
       this.inputSourceList = [];
@@ -2062,6 +2830,11 @@ class SonyTV {
       });
       if (!isNull(this.tvsource)) {
         this.inputSourceList.push(new InputSource(this.tvsource, getSourceType(this.tvsource)));
+      }
+      // v1.4.21: recordings on the TV's USB drive, offered as selectable
+      // inputs (only when the drive is connected).
+      if (this._hasRecStorage) {
+        this.inputSourceList.push(new InputSource('usb:recStorage', Characteristic.InputSourceType.OTHER));
       }
 
       this.receivingSources = true;
@@ -2083,8 +2856,6 @@ class SonyTV {
     } else {
       if (this.debug) this.log('[' + this.name + '] Skipping scan — receivingSources=' + this.receivingSources + ', checkPower=' + checkPower);
     }
-    if (this.channelupdaterate)
-      setTimeout(this.receiveSources.bind(this), this.channelupdaterate);
   }
   // Process next source in the queue, or finish scanning and sync accessory
   receiveNextSources() {
@@ -2146,6 +2917,31 @@ class SonyTV {
               return;
             }
             that.scannedChannels.push([source.title, source.uri, sourceType]);
+            // v1.4.21: remember the number shown on the remote (dispNum) for
+            // the web UI; it is not part of the channel tuple used by HomeKit.
+            if (source.dispNum !== undefined && source.dispNum !== null && String(source.dispNum).trim() !== '') {
+              if (!that._dispNums) that._dispNums = {};
+              that._dispNums[source.uri] = String(source.dispNum).trim();
+            }
+            // v1.4.21: the TV marks each broadcast service as "tv" or "radio"
+            // (programMediaType); keep it so the web UI can list radio
+            // stations separately instead of mixing them with TV channels.
+            if (typeof source.programMediaType === 'string' && source.programMediaType) {
+              if (!that._mediaTypes) that._mediaTypes = {};
+              that._mediaTypes[source.uri] = source.programMediaType;
+            }
+            // v1.4.21: recordings on the USB drive — keep channel, date,
+            // duration and flags for the web UI.
+            if (typeof source.uri === 'string' && source.uri.indexOf('usb:recStorage') === 0) {
+              if (!that._recMeta) that._recMeta = {};
+              that._recMeta[source.uri] = {
+                channelName: source.channelName || '',
+                startDateTime: source.startDateTime || '',
+                durationSec: source.durationSec || 0,
+                isAlreadyPlayed: source.isAlreadyPlayed === true,
+                isProtected: source.isProtected === true
+              };
+            }
             foundChannels++;
           });
           
@@ -2471,6 +3267,76 @@ class SonyTV {
     if (!isNull(callback))
       callback(null, 0);
   }
+  // v1.4.21: press a named remote-control key via IRCC. The code comes from the
+  // TV's own getRemoteControllerInfo list (read once, cached); a built-in
+  // fallback covers the functions offered as virtual inputs.
+  sendRemoteFunction(fnName) {
+    const that = this;
+    const send = (code) => {
+      if (!code) { that.log('[' + that.name + '] ⚠️  Remote function "' + fnName + '" not supported by this TV'); return; }
+      that.log('[' + that.name + '] Remote key: ' + fnName);
+      that.makeHttpRequest(
+        (err) => { if (that.debug) that.log('[' + that.name + '] IRCC ' + fnName + ' failed: ' + err); },
+        () => {},
+        '', that.createIRCC(code), false
+      );
+    };
+    if (this._irccCodes) return send(this._irccCodes[fnName] || IRCC_FALLBACK[fnName]);
+    this.loadRemoteCodes(() => send((that._irccCodes && that._irccCodes[fnName]) || IRCC_FALLBACK[fnName]));
+  }
+
+  // v1.4.21: read the TV's remote-control key list (name → IRCC code) once
+  // and keep it (also in the capabilities file, so the list of offered
+  // "TV functions" is right even when the TV is off at start). done() always
+  // runs exactly once.
+  loadRemoteCodes(done) {
+    const that = this;
+    const post = '{"id":20,"method":"getRemoteControllerInfo","version":"1.0","params":[]}';
+    const finish = () => { if (typeof done === 'function') done(); };
+    this.makeHttpRequest(
+      finish,
+      (data) => {
+        try {
+          const json = JSON.parse(data);
+          const list = json && json.result && Array.isArray(json.result[1]) ? json.result[1] : [];
+          const map = {};
+          list.forEach((k) => { if (k && k.name && k.value) map[k.name] = k.value; });
+          if (Object.keys(map).length > 0) {
+            that._irccCodes = map;
+            that.capabilities.remoteKeys = map;
+            that.saveCapabilities();
+          }
+        } catch (e) {}
+        finish();
+      },
+      '/sony/system/', post, false
+    );
+  }
+
+  // v1.4.21: is a USB recording drive connected to the TV? (getSourceList
+  // with scheme "usb" lists "usb:recStorage" only when a formatted drive is
+  // plugged in). cb(present:boolean). Never throws.
+  detectRecStorage(cb) {
+    const that = this;
+    const post = '{"id":21,"method":"getSourceList","version":"1.0","params":[{"scheme":"usb"}]}';
+    this.makeHttpRequest(
+      () => cb(!!that._hasRecStorage),
+      (data) => {
+        let present = false;
+        try {
+          const json = JSON.parse(data);
+          const list = json && Array.isArray(json.result) && Array.isArray(json.result[0]) ? json.result[0] : [];
+          present = list.some((x) => x && x.source === 'usb:recStorage');
+        } catch (e) {}
+        if (present !== !!that._hasRecStorage) {
+          that.log('[' + that.name + '] ' + (present ? '💾 USB recording drive detected on the TV' : 'USB recording drive not connected'));
+        }
+        that._hasRecStorage = present;
+        cb(present);
+      },
+      '/sony/avContent', post, false
+    );
+  }
   // Homebridge callback to set current channel/input
   setActiveIdentifier(identifier, callback) {
     if (this.debug) this.log('[' + this.name + '] setActiveIdentifier called with identifier: ' + identifier);
@@ -2480,7 +3346,13 @@ class SonyTV {
       var sourceType = inputSource.getCharacteristic(Characteristic.InputSourceType).value;
       if (this.debug) this.log('[' + this.name + '] Switching to: ' + sourceName + ' (type: ' + sourceType + ')');
       
-      if (sourceType == Characteristic.InputSourceType.APPLICATION) {
+      if (typeof inputSource.subtype === 'string' && inputSource.subtype.indexOf('ircc:') === 0) {
+        // v1.4.21: virtual input = press a remote-control key (e.g. Teletext)
+        // on whatever is playing. Forget the current URI so the next status
+        // poll moves the HomeKit selection back to the channel being watched.
+        this.sendRemoteFunction(inputSource.subtype.slice(5));
+        this.currentUri = null;
+      } else if (sourceType == Characteristic.InputSourceType.APPLICATION) {
         if (this.debug) this.log('[' + this.name + '] Type is APPLICATION, calling setActiveApp');
         this.setActiveApp(inputSource.subtype);
       } else {
@@ -2818,6 +3690,13 @@ class SonyTV {
       // even before REST or WOL completes.
       that.recentlyWokenAt = Date.now();
 
+      // v1.4.21: answer HomeKit right away. REST (up to the 8s request timeout
+      // when the TV is unreachable across VLANs) plus the WOL burst (~2.5s)
+      // could exceed HomeKit's ~10s budget and show "No Response". Waking is a
+      // fire-and-forget operation anyway; the real state is reported by the
+      // status polling (fast post-wake polling kicks in via recentlyWokenAt).
+      invokeCallback();
+
       var setPowerOnVersion = that.getApiVersion('setPowerStatus', '1.0');
       var post_data = '{"id":2,"method":"setPowerStatus","version":"' + setPowerOnVersion + '","params":[{"status":true}]}';
 
@@ -2940,11 +3819,25 @@ class SonyTV {
       // v1.4.13: track external OFF→ON transitions (e.g. TV powered on via the
       // physical remote, not via HomeKit) so the post-wake scan delay applies
       // and adaptive polling has a fresh reference point.
-      if (state === true && this.power === false) {
+      var _cameOn = (state === true && this.power === false);
+      if (_cameOn) {
         this.recentlyWokenAt = Date.now();
         if (this.debug) this.log('[' + this.name + '] [POWER] OFF→ON transition detected, recentlyWokenAt=now');
       }
       this.power = state;
+      // v1.4.21: when the TV was off or unreachable at Homebridge start, the
+      // one-shot boot registration failed and nothing ever retried it, so the
+      // channel list was never refreshed (and a brand-new TV was never
+      // published). Now, on every OFF→ON transition, either finish the
+      // registration (cookie mode, not yet authenticated) or run a refresh scan
+      // (already authenticated). receiveSources() applies postWakeScanDelay.
+      if (_cameOn) {
+        if (this.authok === true) {
+          this.receiveSources(true);
+        } else {
+          this._requestReRegistration('TV powered on', true);
+        }
+      }
       this.tvService.getCharacteristic(Characteristic.Active).updateValue(this.power);
       // Sync volume accessory on/off state with TV power
       if (this.volumeAccessoryInstance) {
@@ -2970,6 +3863,26 @@ class SonyTV {
     var that = this;
     var data = '';
     if (isNull(canTurnTvOn)) {canTurnTvOn = false;}
+
+    // v1.4.21: guarantee that exactly ONE of errcallback/resultcallback fires,
+    // exactly once. On the 8s safety timeout, req.destroy() makes Node emit an
+    // extra 'error' event ("socket hang up") after the timeout handler already
+    // reported the failure, so errcallback used to fire twice. In a channel scan
+    // that advanced the source queue twice (skipping a source and possibly
+    // finalising the scan twice); in power-on it could send two WOL bursts.
+    var _settled = false;
+    var _origErr = errcallback;
+    var _origRes = resultcallback;
+    errcallback = isNull(_origErr) ? null : function (err) {
+      if (_settled) return;
+      _settled = true;
+      _origErr(err);
+    };
+    resultcallback = isNull(_origRes) ? null : function (body) {
+      if (_settled) return;
+      _settled = true;
+      _origRes(body);
+    };
     
     if (!that.power && canTurnTvOn) {
       if (that.debug) that.log('[' + that.name + '] TV off, will power on first');
@@ -3073,6 +3986,14 @@ class SonyTV {
           if ((res.statusCode === 401 || res.statusCode === 403) && that.debug) {
             that.log('[' + that.name + '] ⚠️  HTTP ' + res.statusCode + ' on ' + url + ' [' + debugMethodInfo + '] — TV refused the request (authentication required). Body: ' + (data.length > 200 ? data.slice(0, 200) + '...' : data));
           }
+          // v1.4.21: the pairing cookie was only (re)validated at boot. If it
+          // expires while Homebridge keeps running, every private call is
+          // refused with 401/403 + auth_url. Re-run the registration (throttled)
+          // so a fresh cookie is obtained without restarting Homebridge. For a
+          // client already registered on the TV this does not show a new PIN.
+          if ((res.statusCode === 401 || res.statusCode === 403) && requestMethodName !== 'actRegister') {
+            that._requestReRegistration('HTTP ' + res.statusCode + ' on ' + (requestMethodName || url));
+          }
           if (errCode === 12 && requestMethodName && requestMethodVersion && that.methodEndpoints[requestMethodName]) {
             const newVersion = that._downgradeApiVersion(requestMethodName);
             if (newVersion && newVersion !== requestMethodVersion) {
@@ -3137,24 +4058,17 @@ class SonyTV {
     var that = this;
     if (url == '')
       url = '/sony/IRCC';
-    var post_options = null;
-    if (that.comp == 'true') {
-      post_options = {
-        host: 'closure-compiler.appspot.com',
-        port: '80',
-        path: url,
-        method: 'POST',
-        headers: {}
-      };
-    } else {
-      post_options = {
-        host: that.ip,
-        port: that.port,
-        path: url,
-        method: 'POST',
-        headers: {}
-      };
-    }
+    // v1.4.21: the legacy "compatibilitymode" branch inherited from the
+    // original plugin sent every request — including the pairing cookie and
+    // the PSK header — to closure-compiler.appspot.com instead of the TV. It
+    // has been removed: requests always go to the configured TV.
+    var post_options = {
+      host: that.ip,
+      port: that.port,
+      path: url,
+      method: 'POST',
+      headers: {}
+    };
     if (!isNull(this.cookie)) {
       post_options.headers.Cookie = this.cookie; // = { 'Cookie': cookie };
     }
@@ -3265,6 +4179,47 @@ class SonyTV {
       }
       if (pathname === '/web/pairing.js') {
         self.serveFile(res, path.join(__dirname, 'web', 'pairing.js'), 'application/javascript');
+        return;
+      }
+      // v1.4.21: shared design system for all pages (always available, no
+      // secrets inside) and the channel selector script under /web/.
+      if (pathname === '/web/ui.css') {
+        self.serveFile(res, path.join(__dirname, 'web', 'ui.css'), 'text/css');
+        return;
+      }
+      if (pathname === '/web/ui.js') {
+        self.serveFile(res, path.join(__dirname, 'web', 'ui.js'), 'application/javascript');
+        return;
+      }
+      if (pathname === '/web/channel-selector.js') {
+        if (!self.enableChannelSelector) { res.writeHead(404); res.end('Channel Selector is disabled'); return; }
+        self.serveFile(res, path.join(__dirname, 'web', 'channel-selector.js'), 'application/javascript');
+        return;
+      }
+      // v1.4.21: recordings page (USB drive on the TV) and diagnostics.
+      if (pathname === '/recordings') {
+        self.serveFile(res, path.join(__dirname, 'web', 'recordings.html'), 'text/html');
+        return;
+      }
+      if (pathname === '/web/recordings.js') {
+        self.serveFile(res, path.join(__dirname, 'web', 'recordings.js'), 'application/javascript');
+        return;
+      }
+      if (pathname === '/api/diagnostics' && req.method === 'GET') {
+        self.apiDiagnostics(req, res);
+        return;
+      }
+      if (pathname === '/api/recordings' && req.method === 'GET') {
+        self.apiRecordings(req, res);
+        return;
+      }
+      if (pathname.indexOf('/api/recordings/') === 0 && req.method === 'POST') {
+        self.apiRecordingAction(req, res, pathname.slice('/api/recordings/'.length));
+        return;
+      }
+      // v1.4.21: one call with everything the page header needs.
+      if (pathname === '/api/status') {
+        self.sendJSON(res, self.getUiStatus());
         return;
       }
       if (pathname === '/api/pairing-status') {
@@ -3483,7 +4438,14 @@ const pinRequired = !paired;
     });
     
     this.webServer.on('error', (err) => {
-      self.log('[' + self.name + '] Web ERROR: ' + err);
+      if (err && err.code === 'EADDRINUSE') {
+        // v1.4.21: each TV runs its own web server. With several TVs on the
+        // default port only the first one gets it, and the pairing / Channel
+        // Selector pages of the others are unreachable.
+        self.log('[' + self.name + '] ⚠️  Web UI port ' + self.channelSelectorPort + ' is already in use (another TV of this plugin or another program). Pairing and Channel Selector for this TV are NOT available. Give each TV its own "serverPort" (e.g. 8999, 9000, 9001...).');
+      } else {
+        self.log('[' + self.name + '] Web ERROR: ' + err);
+      }
     });
   }
   
@@ -3541,25 +4503,45 @@ const pinRequired = !paired;
     if (!tvName || tvName !== this.name) {
       return this.sendJSON(res, { success: false, error: 'TV mismatch' });
     }
-    
-    if (fs.existsSync(this.fullScanCachePath)) {
-      try {
-        const cached = JSON.parse(fs.readFileSync(this.fullScanCachePath, 'utf8'));
-        let formatted = this.formatChannelsForWeb(cached.channels);
-        formatted = this.appendApplicationsToWebChannels(formatted);
-        return this.sendJSON(res, { success: true, channels: formatted, maxChannels: this.maxInputSources, totalFound: formatted.length });
-      } catch (e) {}
+
+    const reply = (rescanState) => {
+      const extra = rescanState ? { rescan: rescanState } : {};
+      if (fs.existsSync(self.fullScanCachePath)) {
+        try {
+          const cached = JSON.parse(fs.readFileSync(self.fullScanCachePath, 'utf8'));
+          let formatted = self.formatChannelsForWeb(cached.channels, cached.dispNums, cached.mediaTypes, cached.recMeta);
+          formatted = self.appendApplicationsToWebChannels(formatted);
+          return self.sendJSON(res, Object.assign({ success: true, channels: formatted, maxChannels: self.maxInputSources, totalFound: formatted.length, scannedAt: cached.savedAt || null }, extra));
+        } catch (e) {}
+      }
+      if (self.scannedChannels.length > 0) {
+        let formatted = self.formatChannelsForWeb(self.scannedChannels);
+        formatted = self.appendApplicationsToWebChannels(formatted);
+        return self.sendJSON(res, Object.assign({ success: true, channels: formatted, maxChannels: self.maxInputSources, totalFound: formatted.length }, extra));
+      }
+      let formatted = self.appendApplicationsToWebChannels([]);
+      self.sendJSON(res, Object.assign({ success: true, channels: formatted, maxChannels: self.maxInputSources, totalFound: formatted.length }, extra));
+    };
+
+    // v1.4.21: "Rescan TV" really asks the TV for a fresh list (up to v1.4.20
+    // the rescan flag was ignored and the cached list was returned). Waits
+    // for the scan to finish (max ~30 s), then answers with the new cache.
+    if (urlObject.query.rescan === '1') {
+      if (!self.power) return reply('tv-off');
+      const started = Date.now();
+      if (!self.receivingSources) {
+        self.recentlyWokenAt = 0; // no post-wake delay for a manual rescan
+        self.receiveSources(true);
+      }
+      const poll = () => {
+        if (!self.receivingSources) return reply('done');
+        if (Date.now() - started > 30000) return reply('timeout');
+        setTimeout(poll, 400);
+      };
+      setTimeout(poll, 400);
+      return;
     }
-    
-    if (this.scannedChannels.length > 0) {
-      let formatted = this.formatChannelsForWeb(this.scannedChannels);
-       formatted = this.appendApplicationsToWebChannels(formatted);
-       return this.sendJSON(res, { success: true, channels: formatted, maxChannels: this.maxInputSources, totalFound: formatted.length });
-    }
-    
-    let formatted = [];
-     formatted = this.appendApplicationsToWebChannels(formatted);
-     this.sendJSON(res, { success: true, channels: formatted, maxChannels: this.maxInputSources, totalFound: formatted.length });
+    reply(null);
   }
   
   apiGetSelection(req, res) {
@@ -3574,7 +4556,10 @@ const pinRequired = !paired;
       try {
         const data = JSON.parse(fs.readFileSync(this.selectedChannelsPath, 'utf8'));
         const uris = data.channels.map(ch => ch.uri);
-        return this.sendJSON(res, { success: true, selection: uris });
+        // v1.4.21: also return the saved objects (with their HomeKit
+        // identifier) so the UI can keep identifiers stable on re-save.
+        const channels = data.channels.map(ch => ({ uri: ch.uri, name: ch.name, identifier: ch.identifier }));
+        return this.sendJSON(res, { success: true, selection: uris, channels: channels, savedAt: data.savedAt || null });
       } catch (e) {}
     }
     
@@ -3595,14 +4580,12 @@ const pinRequired = !paired;
           return self.sendJSON(res, { success: false, error: 'Invalid data' });
         }
         
-        if (data.channels.length > self.maxInputSources) {
+        const onMainTv = self._mainTvChannels(data.channels.map(ch => [ch.name, ch.uri, ch.sourceType])).length;
+        if (onMainTv > self.maxInputSources) {
           return self.sendJSON(res, { success: false, error: 'Too many channels' });
         }
         
         const saveData = { tv: data.tv, channels: data.channels, savedAt: new Date().toISOString() };
-        if (data.channels.length > self.maxInputSources) {
-          return self.sendJSON(res, { success: false, error: 'Too many channels selected: ' + data.channels.length + '/' + self.maxInputSources });
-        }
 
         fs.writeFileSync(self.selectedChannelsPath, JSON.stringify(saveData, null, 2));
 
@@ -3610,14 +4593,37 @@ const pinRequired = !paired;
         self.sendJSON(res, { success: true, message: 'Saved', channelCount: data.channels.length });
 
         // Apply selection asynchronously to avoid blocking the HTTP response.
-        setTimeout(() => {
+        // v1.4.21: wait for a running scan to finish first (it writes into
+        // scannedChannels too), keep the full scan list afterwards, and write
+        // the identifiers HomeKit actually uses back into the selection file so
+        // they stay the same after a restart.
+        const started = Date.now();
+        const apply = () => {
+          if (self.receivingSources && Date.now() - started < 30000) { setTimeout(apply, 300); return; }
+          const full = self.scannedChannels;
           try {
-            self.scannedChannels = data.channels.map(ch => [ch.name, ch.uri, ch.sourceType]);
+            const picked = data.channels.map(ch => [ch.name, ch.uri, ch.sourceType, (ch.identifier != null ? ch.identifier : null)]);
+            self._refreshSideAccessories(Array.isArray(full) && full.length ? full : self._readFullScanCache(), picked);
+            self.scannedChannels = self._mainTvChannels(picked);
             self.syncAccessory();
+            let changed = false;
+            saveData.channels.forEach((ch) => {
+              const svc = self.uriToInputSource.get(ch.uri);
+              if (svc) {
+                const id = svc.getCharacteristic(Characteristic.Identifier).value;
+                if (ch.identifier !== id) { ch.identifier = id; changed = true; }
+              }
+            });
+            if (changed) fs.writeFileSync(self.selectedChannelsPath, JSON.stringify(saveData, null, 2));
+            self.log('[' + self.name + '] ✓ Channel selection applied from web UI: ' + data.channels.length + ' inputs');
           } catch (e) {
             self.log('[' + self.name + '] ERROR applying selection: ' + e.toString());
+          } finally {
+            self.receivingSources = false;
+            if (Array.isArray(full) && full.length > 0) self.scannedChannels = full;
           }
-        }, 10);
+        };
+        setTimeout(apply, 10);
       } catch (e) {
         self.sendJSON(res, { success: false, error: e.toString() });
       }
@@ -3781,11 +4787,16 @@ const pinRequired = !paired;
     const out = (data.managedTvs || []).map(function (m) {
       const nm = normaliseMac(m.mac);
       const conflictsWithConfig = nm && configMacs[nm];
-      return Object.assign({}, m, {
+      const out = Object.assign({}, m, {
         mac: nm,
         conflictsWithConfig: !!conflictsWithConfig,
-        conflictName: conflictsWithConfig ? configMacs[nm] : null
+        conflictName: conflictsWithConfig ? configMacs[nm] : null,
+        // v1.4.21: never return the PSK itself on this unauthenticated LAN
+        // endpoint; the UI only needs to know whether one is set.
+        psk: m.psk ? true : undefined,
+        hasPsk: !!m.psk
       });
+      return out;
     });
     self.sendJSON(res, { success: true, autoscanEnabled: !!(platform.autoscan), version: data.version || 1, managedTvs: out });
   }
@@ -3867,7 +4878,7 @@ const pinRequired = !paired;
           self.sendJSON(res, {
             success: true,
             message: existingIdx >= 0 ? 'Updated' : 'Added',
-            entry: entry,
+            entry: Object.assign({}, entry, { psk: entry.psk ? true : undefined, hasPsk: !!entry.psk }),
             backup: bak,
             enrichmentError: enrichmentError,
             restartRequired: true
@@ -3916,7 +4927,7 @@ const pinRequired = !paired;
       try {
         const bak = saveManagedTvs(data, self.log);
         self.log('[' + self.name + '] /api/managed-tvs (PATCH): updated ' + targetMac + ' fields=' + changed.join(',') + (bak ? ' [backup: ' + bak + ']' : ''));
-        self.sendJSON(res, { success: true, entry: entry, backup: bak, restartRequired: true });
+        self.sendJSON(res, { success: true, entry: Object.assign({}, entry, { psk: entry.psk ? true : undefined, hasPsk: !!entry.psk }), backup: bak, restartRequired: true });
       } catch (e) {
         self.sendJSON(res, { success: false, message: 'Save failed: ' + e.message });
       }
@@ -3966,14 +4977,31 @@ const pinRequired = !paired;
     res.end(JSON.stringify(data));
   }
   
-  formatChannelsForWeb(channels) {
-    return channels.map(ch => ({
-      name: ch[0],
-      uri: ch[1],
-      sourceType: ch[2],
-      channelNumber: this.extractChannelNumber(ch[1]) || 'N/A',
-      type: ch[2] === 2 ? 'tv' : (ch[2] === 10 ? 'app' : 'hdmi')
-    }));
+  formatChannelsForWeb(channels, dispNums, mediaTypes, recMeta) {
+    // v1.4.21: channelNumber is the number shown on the remote (dispNum from
+    // getContentList). The previous value was the last segment of the DVB
+    // triplet (a service id such as 1101 for Rai 1), which was misleading.
+    // Types: tv, radio (programMediaType from the TV), hdmi, app, fn (remote
+    // functions such as Teletext).
+    const nums = dispNums || this._dispNums || {};
+    const media = mediaTypes || this._mediaTypes || {};
+    const recs = recMeta || this._recMeta || {};
+    return channels.map(ch => {
+      const n = nums[ch[1]];
+      let type = ch[2] === 2 ? 'tv' : (ch[2] === 10 ? 'app' : 'hdmi');
+      if (type === 'tv' && media[ch[1]] === 'radio') type = 'radio';
+      if (typeof ch[1] === 'string' && ch[1].indexOf('ircc:') === 0) type = 'fn';
+      if (typeof ch[1] === 'string' && ch[1].indexOf('usb:recStorage') === 0) type = 'rec';
+      const o = {
+        name: ch[0],
+        uri: ch[1],
+        sourceType: ch[2],
+        channelNumber: (n !== undefined && n !== null && n !== '') ? (String(n).replace(/^0+(?=\d)/, '')) : 'N/A',
+        type: type
+      };
+      if (type === 'rec' && recs[ch[1]]) o.rec = recs[ch[1]];
+      return o;
+    });
   }
 
   // Add configured applications to a formatted channel list for the web UI (Option A: separate "Applications" section)
@@ -4073,7 +5101,7 @@ const pinRequired = !paired;
   // Save the full scan (unlimited list) so the web UI can display all channels even when HomeKit is limited.
   saveFullScanCache(channels) {
     try {
-      const payload = { tv: this.name, savedAt: new Date().toISOString(), channels: channels };
+      const payload = { tv: this.name, savedAt: new Date().toISOString(), channels: channels, dispNums: this._dispNums || {}, mediaTypes: this._mediaTypes || {}, recMeta: this._recMeta || {} };
       fs.writeFileSync(this.fullScanCachePath, JSON.stringify(payload, null, 2));
       if (this.debug) this.log('[' + this.name + '] ✓ Full scan cache saved: ' + this.fullScanCachePath + ' (' + channels.length + ' items)');
     } catch (e) {
@@ -4085,6 +5113,18 @@ const pinRequired = !paired;
 
 function isNull(object) {
   return object === undefined || object === null;
+}
+
+// HomeKit ID ("username") Homebridge assigns to an external accessory: the
+// first 12 hex digits of sha1(UUID), same algorithm as homebridge/util/mac.
+// Informational only (logged so users can find the matching pairing).
+function homeKitIdFor(uuid) {
+  try {
+    const s = require('crypto').createHash('sha1').update(String(uuid)).digest('hex');
+    return s.slice(0, 12).match(/../g).join(':').toUpperCase();
+  } catch (e) {
+    return '?';
+  }
 }
 
 // Compare two Sony API version strings (e.g. "1.0", "1.2", "1.10").
@@ -4114,6 +5154,9 @@ function InputSource(name, type) {
 function getSourceType(name) {
   if (name.indexOf('hdmi') !== -1) {
     return Characteristic.InputSourceType.HDMI;
+  } else if (name.indexOf('composite') !== -1) {
+    // v1.4.21: analog A/V input ("AV2/Component" on many Bravia) — issue #8
+    return Characteristic.InputSourceType.COMPOSITE_VIDEO;
   } else if (name.indexOf('component') !== -1) {
     return Characteristic.InputSourceType.COMPONENT_VIDEO;
   } else if (name.indexOf('scart') !== -1) {

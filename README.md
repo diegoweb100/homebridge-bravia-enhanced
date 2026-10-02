@@ -20,7 +20,7 @@ Homebridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **Web-based Channel Selector UI**: browse, search and save your favourite channels directly from the browser, no config file editing required.
 - **Full-scan cache**: all channels are always visible in the UI even when HomeKit shows only a subset.
 - **User selection persistence**: your channel selection survives Homebridge restarts.
-- **HomeKit 98-input limit enforced** (100 services minus TV minus Speaker equals 98 max inputs), configurable via `maxInputSources`.
+- **HomeKit 97-input limit enforced** (100 services minus AccessoryInformation, TV and Speaker equals 97 max inputs), configurable via `maxInputSources`.
 - **New pairing page**: clean PIN entry UI with live pairing status, a **Request PIN from TV** button to trigger a new PIN without restarting Homebridge (v1.4.12+), and a **Delete cookie and force re-pairing** button for cookie-based setups.
 - **Improved app title matching**: fuzzy normalisation prevents duplicates and handles `+`/`plus` variants.
 - **HDMI input status polling**: auto-detects connected/disconnected HDMI inputs with automatic API version fallback (v1.1 to v1.0).
@@ -41,7 +41,7 @@ Homebridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **WOL burst**: power-on sends a configurable burst of magic packets (5 packets at 500 ms intervals by default) instead of a single packet. Much more reliable on flaky networks and on TVs whose NIC firmware is still booting when the first packet arrives.
 - **REST alive verification after WOL**: the plugin polls `getPowerStatus` every 2 s for up to 15 s after a WOL burst and logs precisely when the TV came alive (or timed out).
 - **`wolMode` configuration option**: selects the WOL fallback strategy when REST `setPowerStatus` fails.
-  - `"auto"` (default): WOL burst as unicast to the TV's IP. Works on most home networks and avoids broadcast noise.
+  - `"auto"` (default): WOL burst sent both as unicast to the TV's IP and to the subnet broadcast derived from it (since v1.4.21: unicast alone is dropped when the host no longer has an ARP entry for a sleeping TV).
   - `"directed-broadcast"`: WOL burst to subnet broadcast (`woladdress`). Useful across VLANs when broadcast-forward is enabled.
   - `"disabled"`: REST only, no WOL.
 - **Back-compat for `woladdress`** (v1.4.15+): if you set `woladdress` in config but do not set `wolMode`, the plugin auto-promotes `wolMode` to `directed-broadcast` so v1.4.12 setups keep working after upgrade.
@@ -67,6 +67,12 @@ See the [CHANGELOG](CHANGELOG.md) for the complete history.
 - Triggering automations when the TV turns on/off
 - iOS 12.2 remote support
 - Authentication with or without PSK (cookie pairing for legacy models, PSK for XR)
+- TV functions as inputs: Teletext, TV Guide, Subtitles, Audio track, TV / Radio, Home menu, Channel +/− (v1.4.21)
+- "TV Settings" in the iOS remote / TV tile opens the TV's options menu (v1.4.21)
+- Radio stations, with their own group in the Channel Selector (v1.4.21)
+- **Recordings — only with a USB hard drive connected to the TV** (v1.4.21): recordings as inputs, "Record now", and a Recordings web page to play, protect and delete them
+- Optional Controls accessory: picture-mode switches and "Screen off" (v1.4.21)
+- Diagnostics page: Wake-on-LAN, network, power saving, picture mode, USB drive, TV clock (v1.4.21)
 
 This plugin requires iOS 12.2+.
 
@@ -93,6 +99,8 @@ Or clone this repo and run `npm install` locally.
 7. **Cookie users**: a PIN appears on the TV screen. Open `http://<homebridge-ip>:8999/pair?tv=<TV_NAME>` (the URL is also logged at boot) and enter the PIN there.
 
 ### Channel Selector UI
+
+Since v1.4.21 the web UI has three tabs — **Channels & inputs**, **Pairing & device** and **Discover TVs** — with light/dark theme and phone layout. Saving a selection applies it to HomeKit immediately (no restart) and keeps the HomeKit identifiers of the inputs you already had. TV channels, **radio stations**, HDMI inputs, apps and **Teletext** (a virtual input that presses the Teletext key on the TV) can all be selected.
 
 After pairing, open `http://<homebridge-ip>:8999` (or the configured `serverPort`) to access the Channel Selector. You can:
 
@@ -211,9 +219,9 @@ When `psk` is not set the plugin falls back to legacy cookie pairing (PIN entry 
 | Option | Default | Description |
 |---|---|---|
 | `tvsource` | unset | TV tuner source: `tv:dvbt` (antenna), `tv:dvbc` (cable), or `tv:dvbs` (satellite). Leave unset to omit TV channels. |
-| `sources` | `["extInput:hdmi", "extInput:component", "extInput:scart", "extInput:cec", "extInput:widi"]` | External input sources to include in HomeKit. |
+| `sources` | read from the TV | Sony source URIs to scan, e.g. `["extInput:hdmi"]`. When set, **only** these are used, exactly as written. When not set, the plugin asks the TV for its real list (`getSourceList`, e.g. `extInput:hdmi`, `extInput:composite`, `extInput:scart`, `extInput:cec`, `extInput:widi`). Entries that are not source URIs (e.g. `"HDMI 3"` or a device name) are ignored with a warning: to show or hide single inputs use the Channel Selector. Note: the analog A/V input is `extInput:composite` (not `extInput:component`). |
 | `applications` | unset | Array of `{title}` objects. **Apps are not added unless this array contains at least one entry.** Title matching is a partial-includes match (e.g. `{"title": "Netflix"}` matches anything whose title contains "Netflix"). |
-| `maxInputSources` | `98` | Max input sources to register in HomeKit. Hard cap: 98 (100 services minus TV minus Speaker). |
+| `maxInputSources` | `97` | Max input sources to register in HomeKit. Hard cap: 97 (100 services minus AccessoryInformation, TV and Speaker). |
 | `hideDisconnectedInputs` | `false` | Automatically hide HDMI inputs that are physically disconnected. |
 | `channelupdaterate` | `30000` | Interval (ms) for the periodic channel/input list refresh. Set to `0` to disable periodic refresh. |
 
@@ -222,11 +230,11 @@ When `psk` is not set the plugin falls back to legacy cookie pairing (PIN entry 
 | Option | Default | Description |
 |---|---|---|
 | `mac` | unset | MAC address of the TV. Only required if you want WOL. |
-| `wolMode` | `auto` | WOL strategy used when REST `setPowerStatus` fails. `auto` sends a magic-packet burst as **unicast** to the TV's IP (works on most home networks, avoids broadcast noise). `directed-broadcast` sends the burst to the **subnet broadcast** (`woladdress`); useful across VLANs when broadcast-forward is enabled. `disabled` skips WOL entirely (REST only). |
+| `wolMode` | `auto` | WOL strategy used when REST `setPowerStatus` fails. `auto` sends a magic-packet burst both as **unicast** to the TV's IP and to the **subnet broadcast** derived from it (v1.4.21+). `directed-broadcast` sends the burst to the **subnet broadcast** (`woladdress`); useful across VLANs when broadcast-forward is enabled. `disabled` skips WOL entirely (REST only). |
 | `woladdress` | `<TV-subnet>.255` (auto-derived from `ip`) | Subnet broadcast address used when `wolMode: "directed-broadcast"`. **Back-compat (v1.4.15+)**: if you set `woladdress` in config but do not set `wolMode`, the plugin auto-promotes `wolMode` to `directed-broadcast` so v1.4.12 setups keep working after upgrade. Ignored when `wolMode` is explicitly set to `auto` or `disabled`. |
 | `wolBurstCount` | `5` | Number of magic packets sent in a burst. Higher counts increase reliability on flaky networks at the cost of a slightly longer wake response. |
 | `wolBurstInterval` | `500` | Interval (ms) between magic packets in a burst. |
-| `wakeWaitMaxMs` | `15000` | Maximum time (ms) to wait for REST `getPowerStatus` to report `active` after a WOL burst. Used for verification logging only: the HomeKit callback is invoked earlier (right after the burst completes) so HomeKit does not time out. |
+| `wakeWaitMaxMs` | `45000` | Maximum time (ms) to wait for REST `getPowerStatus` to report `active` after a WOL burst. Used for verification logging only: since v1.4.21 HomeKit is answered immediately when a power-on is requested. Older Bravia need about 25 s to become reachable. |
 | `wakeWaitIntervalMs` | `2000` | Interval (ms) between alive-check polls during the wake-wait window. |
 | `postWakeScanDelay` | `3000` | Delay (ms) before the first channel scan after a wake-up, to let the TV's AV stack initialise before content list queries are issued. |
 | `updaterate` | `5000` | Power-status polling interval (ms) while the TV is on. |
@@ -240,6 +248,11 @@ When `psk` is not set the plugin falls back to legacy cookie pairing (PIN entry 
 |---|---|---|
 | `soundoutput` | `speaker` | `speaker` or `headphone`. Required for volume control. |
 | `volumeAccessory` | `false` | Publish a separate Lightbulb accessory to control volume (brightness) and mute (on/off) from HomeKit. |
+| `appsAccessory` | `false` | Show apps in a separate **"<name> Apps"** TV tile instead of the TV's input list: pick one to launch it. The apps ticked in the Channel Selector, or all if none. |
+| `recordingsAccessory` | `false` | **USB hard drive required.** Show every recording on the drive in a separate **"<name> Recordings"** TV tile, newest first, updated automatically: pick one to play it. |
+| `functionsAccessory` | `false` | Show TV functions (Teletext, Guide, Subtitles, Record now…) as buttons in a separate **"<name> Functions"** accessory instead of the TV's input list. The ones ticked in the Channel Selector, or all if none. |
+| `controlsAccessory` | `false` | Publish a separate "<name> Controls" accessory: one switch per picture mode (mutually exclusive; switching one off goes back to Auto) and a "Screen off" switch (power saving "picture off": the screen goes dark, sound keeps playing — handy for radio). |
+| `controlsScenes` | `["cinema","game","sports"]` | Picture modes exposed as switches. The modes your TV supports are listed on the web page, Pairing & device → Diagnostics (e.g. `general`, `auto`, `photo`, `music`, `cinema`, `game`, `graphics`, `sports`, `animation`). |
 | `volumeUI` | `false` | Show the TV's native volume slider overlay on screen when changing volume via HomeKit. Requires `setAudioVolume` v1.2+ (auto-detected). When `false`, volume changes are silent (no on-screen feedback). |
 
 ### Network and UI
@@ -247,7 +260,7 @@ When `psk` is not set the plugin falls back to legacy cookie pairing (PIN entry 
 | Option | Default | Description |
 |---|---|---|
 | `port` | `80` | HTTP port of the TV. |
-| `serverPort` | `8999` | Port for the plugin's web server (PIN entry and Channel Selector). |
+| `serverPort` | `8999` | Port for the plugin's web server (PIN entry and Channel Selector). **Each TV runs its own web server: with more than one TV give each one a different `serverPort`.** |
 | `channelSelectorPort` | same as `serverPort` | Override port for the Channel Selector UI (rarely needed). |
 | `enableChannelSelector` | `true` | Controls only whether the Channel Selector UI page is exposed. The web server itself (needed for pairing) is always active, regardless of this option. |
 | `externalaccessory` | `false` | Publish the TV as an external accessory. Needed for multiple TVs to work with Apple's Remote app. |
@@ -264,7 +277,7 @@ When `psk` is not set the plugin falls back to legacy cookie pairing (PIN entry 
 
 | Scenario | `wolMode` setting | Notes |
 |---|---|---|
-| Homebridge and TV on the same subnet | `auto` (default) | Unicast WOL works directly. |
+| Homebridge and TV on the same subnet | `auto` (default) | Unicast + subnet broadcast. |
 | TV on a different VLAN, router has `broadcast-forward` enabled | `directed-broadcast` | Subnet broadcast is forwarded by the router into the TV's VLAN. |
 | You used to have `woladdress` in config and upgraded from v1.4.12 | leave unset | The plugin auto-promotes to `directed-broadcast` for back-compat (v1.4.15+). |
 | You do not want WOL at all (REST `setPowerStatus` only) | `disabled` | The plugin never sends magic packets. |
@@ -280,7 +293,21 @@ Control the TV through Siri or the Home app.
 
 ### Inputs, channels and apps
 
-All scanned channels, inputs and apps appear in the HomeKit input selector. Use the Channel Selector web UI to curate which ones are exposed to HomeKit (HomeKit caps at 98 inputs).
+All scanned channels, inputs and apps appear in the HomeKit input selector. Use the Channel Selector web UI to curate which ones are exposed to HomeKit (HomeKit caps at 97 inputs).
+
+### Recordings (USB hard drive required)
+
+Everything about recordings works **only while a USB hard drive is connected to the TV and registered for recording** (TV menu → Settings → Recording setup). The plugin checks for the drive at every scan:
+
+- the Channel Selector shows a **Recordings on the USB drive** group: each selected recording becomes a Home app input that plays it;
+- the **Record now** function (TV functions group) is offered only when the drive is present;
+- the **Recordings** web page (`/recordings`) lists what is on the drive with channel, date and length, and lets you play, protect/unprotect and delete (protected recordings cannot be deleted); it also shows scheduled timers and the recordings that failed.
+
+Without the drive, none of these appear and the Recordings page says so.
+
+### Separate tiles for apps, recordings and TV functions
+
+HomeKit shows a TV's inputs as one flat list. With `appsAccessory`, `recordingsAccessory` and `functionsAccessory` the TV tile keeps only HDMI inputs, channels and radio, and the rest gets its own tile: **<name> Apps** and **<name> Recordings** are TV tiles (pick an entry to launch the app / play the recording; on/off follows the TV), **<name> Functions** has one button per function (it switches itself off after a second). They do not count towards the 97-input limit of the TV. Each is a separate HomeKit accessory: add it once in the Home app with the Homebridge setup code (Add Accessory → More options).
 
 ### TV Remote
 
@@ -291,6 +318,14 @@ The plugin registers a TV remote in HomeKit. Use the basic function keys, and se
 The TV speaker is also exposed as a HomeKit accessory (not shown in the Home app, but visible in some third-party apps).
 
 ---
+
+## Troubleshooting
+
+- **TV was off when Homebridge started**: since v1.4.21 the plugin completes the pairing check and refreshes channels automatically as soon as the TV is switched on. No restart needed.
+- **An HDMI input is missing**: do not put input names (e.g. `"HDMI 3"` or `"Nintendo Switch 2"`) in `sources` — that field takes Sony source URIs and, when set, replaces the whole list. Remove `sources` (or set it to `["extInput:hdmi"]`) and pick single inputs in the Channel Selector.
+- **Volume accessory: "Accessory already in another home"**: the volume accessory's HomeKit ID is derived from the TV name and is written in the log at startup (`Volume accessory published: <name> Volume (HomeKit ID XX:XX:...)`). After renaming or re-adding a TV, Homebridge may still hold the old pairing for that ID. In Homebridge UI go to Settings → *Unpair Bridges / Cameras / TVs / External Accessories*, remove the entry with that ID, restart Homebridge and add the accessory again.
+- **Several TVs on the same Homebridge**: set a different `serverPort` for each TV, otherwise only the first TV gets the pairing / Channel Selector page (a warning is logged).
+- **`compatibilitymode`**: obsolete, ignored since v1.4.21; remove it from config.
 
 ## Development
 

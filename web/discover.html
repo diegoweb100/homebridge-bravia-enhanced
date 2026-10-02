@@ -3,247 +3,73 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Bravia Enhanced - TV Discovery</title>
-  <style>
-    :root{
-      --bg:#0b1020; --panel:rgba(255,255,255,.06); --text:rgba(255,255,255,.92);
-      --muted:rgba(255,255,255,.70); --border:rgba(255,255,255,.10);
-      --shadow:0 18px 50px rgba(0,0,0,.45);
-      --primary:#6d5efc; --primary2:#22c55e; --danger:#ef4444; --warn:#f59e0b;
-      --radius:16px;
-    }
-    *{box-sizing:border-box}
-    .hidden{display:none !important}
-    html,body{height:100%}
-    body{
-      margin:0; padding:28px 16px 56px;
-      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";
-      color:var(--text);
-      background:
-        radial-gradient(1200px 800px at 20% -10%, rgba(109,94,252,.35), transparent 60%),
-        radial-gradient(900px 700px at 90% 10%, rgba(34,197,94,.22), transparent 60%),
-        radial-gradient(1000px 900px at 50% 110%, rgba(59,130,246,.18), transparent 60%),
-        var(--bg);
-    }
-    .container{max-width:1100px;margin:0 auto}
-
-    .header{
-      display:flex; gap:16px; align-items:flex-start; justify-content:space-between;
-      padding:18px; border:1px solid var(--border);
-      background:linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
-      backdrop-filter:blur(10px);
-      border-radius:var(--radius); box-shadow:var(--shadow);
-    }
-    .header h1{margin:0;font-size:22px}
-    .subtitle{margin-top:6px;color:var(--muted);font-size:14px}
-    .pill{
-      padding:6px 10px; border-radius:999px; font-size:12px; white-space:nowrap;
-      border:1px solid var(--border); background:rgba(255,255,255,.06); color:var(--muted);
-    }
-    .pill.ok{ border-color:rgba(34,197,94,.45); background:rgba(34,197,94,.10); color:rgba(255,255,255,.92) }
-    .pill.warn{ border-color:rgba(245,158,11,.45); background:rgba(245,158,11,.12); color:rgba(255,255,255,.92) }
-    .pill.danger{ border-color:rgba(239,68,68,.45); background:rgba(239,68,68,.12); color:rgba(255,255,255,.92) }
-
-    .panel{
-      margin-top:16px; padding:14px 16px;
-      border-radius:var(--radius); border:1px solid var(--border);
-      background:var(--panel); backdrop-filter:blur(10px);
-      box-shadow:0 10px 30px rgba(0,0,0,.25);
-    }
-    .panel h2{margin:0 0 10px 0; font-size:16px; display:flex; align-items:center; gap:8px}
-    .panel-meta{color:var(--muted); font-size:12px; margin-bottom:12px}
-
-    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
-    .grow{flex:1 1 auto; min-width:0}
-
-    select, input[type="text"], input[type="password"]{
-      appearance:none; background:rgba(255,255,255,.06); border:1px solid var(--border);
-      color:var(--text); border-radius:12px; padding:10px 12px; font-size:14px; outline:none;
-      width:100%;
-    }
-    select:focus, input:focus{
-      border-color:rgba(109,94,252,.55); box-shadow:0 0 0 4px rgba(109,94,252,.18);
-    }
-    label{ font-size:12px; color:var(--muted); display:block; margin-bottom:6px }
-
-    .btn{
-      border:1px solid var(--border); background:rgba(255,255,255,.06);
-      color:var(--text); padding:10px 14px; border-radius:12px; cursor:pointer;
-      font-size:14px; transition:transform .08s ease, background .15s ease, border-color .15s ease;
-      user-select:none; white-space:nowrap;
-    }
-    .btn:hover{background:rgba(255,255,255,.10); border-color:rgba(255,255,255,.16)}
-    .btn:active{transform:translateY(1px)}
-    .btn:disabled{opacity:.55; cursor:not-allowed}
-    .btn-primary{
-      background:linear-gradient(135deg, rgba(109,94,252,.95), rgba(109,94,252,.65));
-      border-color:rgba(109,94,252,.55);
-    }
-    .btn-primary:hover{background:linear-gradient(135deg, rgba(109,94,252,1), rgba(109,94,252,.78))}
-    .btn-success{
-      background:linear-gradient(135deg, rgba(34,197,94,.95), rgba(34,197,94,.65));
-      border-color:rgba(34,197,94,.55);
-    }
-    .btn-danger{ background:rgba(239,68,68,.18); border-color:rgba(239,68,68,.35) }
-    .btn-ghost{ background:transparent }
-
-    .tv-card{
-      display:grid; grid-template-columns:1fr auto; gap:12px;
-      padding:14px; margin:10px 0;
-      border-radius:14px; border:1px solid var(--border);
-      background:rgba(255,255,255,.06);
-    }
-    .tv-card.disabled{ opacity:.6 }
-    .tv-card.in-config{ border-color:rgba(245,158,11,.45); background:rgba(245,158,11,.08) }
-    .tv-card.in-managed{ border-color:rgba(34,197,94,.45); background:rgba(34,197,94,.08) }
-    .tv-title{ font-size:15px; font-weight:650; margin-bottom:4px }
-    .tv-info{ color:var(--muted); font-size:12px; line-height:1.5 }
-    .tv-info code{ background:rgba(255,255,255,.06); padding:1px 6px; border-radius:6px; font-size:11px }
-    .tv-actions{ display:flex; flex-direction:column; gap:6px; align-items:flex-end; justify-content:flex-start }
-    .tv-actions .btn{ padding:7px 10px; font-size:13px }
-
-    .empty{ padding:24px; text-align:center; color:var(--muted); font-size:14px }
-    .spinner{
-      width:22px; height:22px; border-radius:999px;
-      border:3px solid rgba(255,255,255,.18); border-top-color:rgba(255,255,255,.70);
-      display:inline-block; animation:spin .9s linear infinite; vertical-align:middle;
-      margin-right:8px;
-    }
-    @keyframes spin{ to { transform:rotate(360deg) } }
-
-    .form-grid{ display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px }
-    @media (max-width:640px){ .form-grid{ grid-template-columns:1fr } }
-
-    .modal-backdrop{
-      position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9998;
-      display:flex; align-items:center; justify-content:center; padding:18px;
-    }
-    .modal{
-      max-width:520px; width:100%; max-height:90vh; overflow:auto;
-      background:#11172a; border:1px solid var(--border); border-radius:var(--radius);
-      box-shadow:var(--shadow); padding:18px;
-    }
-    .modal h3{ margin:0 0 12px 0; font-size:18px }
-    .modal .actions{ display:flex; gap:10px; justify-content:flex-end; margin-top:14px }
-
-    .toast-container{
-      position:fixed; top:14px; right:14px; z-index:9999;
-      display:flex; flex-direction:column; gap:10px; pointer-events:none;
-    }
-    .toast{
-      pointer-events:auto; min-width:280px; max-width:420px;
-      padding:12px; border-radius:14px; border:1px solid var(--border);
-      background:rgba(17,24,39,.92); box-shadow:var(--shadow);
-      opacity:0; transform:translateY(-6px);
-      animation:toastIn .18s ease-out forwards;
-    }
-    @keyframes toastIn{ to { transform:translateY(0); opacity:1 } }
-    .toast.success{ border-color:rgba(34,197,94,.45) }
-    .toast.error{ border-color:rgba(239,68,68,.45) }
-    .toast.warn{ border-color:rgba(245,158,11,.45) }
-    .toast.info{ border-color:rgba(109,94,252,.45) }
-    .toast-title{ font-weight:650; font-size:13px; margin-bottom:4px }
-    .toast-msg{ color:var(--muted); font-size:13px; line-height:1.35 }
-
-    .switch{
-      position:relative; display:inline-block; width:42px; height:24px;
-    }
-    .switch input{ opacity:0; width:0; height:0 }
-    .slider{
-      position:absolute; cursor:pointer; inset:0;
-      background:rgba(255,255,255,.15); border-radius:24px;
-      transition:.2s;
-    }
-    .slider::before{
-      content:""; position:absolute; height:18px; width:18px; left:3px; top:3px;
-      background:white; border-radius:50%; transition:.2s;
-    }
-    .switch input:checked + .slider{ background:rgba(34,197,94,.75) }
-    .switch input:checked + .slider::before{ transform:translateX(18px) }
-  </style>
+  <meta name="color-scheme" content="light dark">
+  <title>Discover TVs · Bravia Enhanced</title>
+  <!-- discover.html v1.4.21 (homebridge-bravia-enhanced by diegoweb100) -->
+  <link rel="stylesheet" href="/web/ui.css">
 </head>
 <body>
-  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+  <div id="hdr"></div>
 
-  <div class="container">
-    <div class="header">
-      <div>
-        <h1>🔍 TV Discovery</h1>
-        <div class="subtitle">Scan the network for Sony Bravia TVs and manage them without editing config.json.</div>
+  <main>
+    <section class="panel">
+      <div class="ph">
+        <div class="si"><i data-ic="radar"></i></div>
+        <div class="grow">
+          <h2>Find Bravia TVs on the network</h2>
+          <p id="scan-meta">Scans the configured <code>discoveryRange</code> (or this host's /24) for Sony TVs. TVs you add here are kept in a separate file: <code>config.json</code> is never modified.</p>
+        </div>
+        <span id="autoscan-pill" class="pill">…</span>
       </div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end">
-        <span id="autoscan-pill" class="pill">Loading…</span>
-        <button id="back-btn" class="btn btn-ghost">← Back</button>
+      <div class="toolbar">
+        <button id="scan-btn" class="btn btn-primary btn-lg"><i data-ic="radar"></i>Scan the network</button>
+        <span class="note" id="scan-status"></span>
       </div>
-    </div>
+      <div id="scan-results"></div>
+    </section>
 
-    <div class="panel">
-      <h2>🛰️ Network Scan</h2>
-      <div class="panel-meta" id="scan-meta">
-        Scans the configured <code>discoveryRange</code> (or the host's local /24 if not set) for Sony TVs over HTTP.
-      </div>
-      <div class="row">
-        <button id="scan-btn" class="btn btn-primary">Start scan</button>
-        <span id="scan-status" class="pill hidden"></span>
-      </div>
-      <div id="scan-results" style="margin-top:14px"></div>
-    </div>
-
-    <div class="panel">
-      <h2>📺 Managed TVs</h2>
-      <div class="panel-meta">
-        These TVs are stored in <code>tvs-managed.json</code> and merged with <code>config.json</code> when <code>autoscan: true</code>.
-        On duplicate MACs, <strong>config.json wins</strong> and the managed entry is skipped at boot (with a log warning).
-        Changes here require a Homebridge restart to apply.
+    <section class="panel">
+      <div class="ph">
+        <div class="si"><i data-ic="tv"></i></div>
+        <div class="grow">
+          <h2>Managed TVs</h2>
+          <p>Stored in <code>tvs-managed.json</code> and loaded together with <code>config.json</code> when <code>autoscan</code> is on. If the same MAC is in both, <b>config.json wins</b>. Changes apply after a Homebridge restart.</p>
+        </div>
       </div>
       <div id="managed-list"></div>
-      <div class="row" style="margin-top:12px; justify-content:flex-end">
-        <button id="clear-btn" class="btn btn-danger hidden">🗑️ Clear all managed TVs</button>
+      <div class="toolbar" style="justify-content:flex-end;margin-top:6px">
+        <button id="clear-btn" class="btn btn-danger hidden"><i data-ic="trash"></i>Remove all managed TVs</button>
       </div>
-    </div>
-  </div>
+    </section>
+  </main>
 
-  <!-- Add/edit modal -->
-  <div id="modal-backdrop" class="modal-backdrop hidden">
-    <div class="modal">
+  <!-- Add / edit -->
+  <div id="modal-backdrop" class="modal-bg hidden">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <h3 id="modal-title">Add TV</h3>
-      <div class="form-grid">
-        <div>
-          <label for="m-name">Name</label>
-          <input id="m-name" type="text" placeholder="Living Room TV" />
-        </div>
-        <div>
-          <label for="m-ip">IP / Hostname</label>
-          <input id="m-ip" type="text" placeholder="192.168.1.20" />
-        </div>
-        <div>
-          <label for="m-mac">MAC <span id="m-mac-note" style="font-weight:normal; color:var(--muted)"></span></label>
-          <input id="m-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF" />
-        </div>
-        <div>
-          <label for="m-psk">Pre-Shared Key (PSK) <span style="font-weight:normal; color:var(--muted)">(optional)</span></label>
-          <input id="m-psk" type="password" placeholder="leave empty for cookie pairing" autocomplete="off" />
-        </div>
-        <div style="grid-column: span 2">
-          <label for="m-tvsource">TV source</label>
-          <select id="m-tvsource">
-            <option value="">(not set)</option>
+      <div class="form">
+        <div><label class="lb" for="m-name">Name in HomeKit</label><input class="inp" id="m-name" type="text" placeholder="Living room TV"></div>
+        <div><label class="lb" for="m-ip">IP / hostname</label><input class="inp" id="m-ip" type="text" placeholder="192.168.1.20"></div>
+        <div><label class="lb" for="m-mac">MAC <span id="m-mac-note" style="text-transform:none;letter-spacing:0;font-weight:500"></span></label><input class="inp mono" id="m-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF"></div>
+        <div><label class="lb" for="m-psk">Pre-Shared Key <span style="text-transform:none;letter-spacing:0;font-weight:500">(optional)</span></label><input class="inp" id="m-psk" type="password" placeholder="leave empty for cookie pairing" autocomplete="off"></div>
+        <div class="full"><label class="lb" for="m-tvsource">TV channels from</label>
+          <select class="inp" id="m-tvsource">
+            <option value="">No TV channels (inputs and apps only)</option>
             <option value="tv:dvbt">Antenna (tv:dvbt)</option>
             <option value="tv:dvbc">Cable (tv:dvbc)</option>
             <option value="tv:dvbs">Satellite (tv:dvbs)</option>
           </select>
         </div>
-        <div style="grid-column: span 2">
-          <div class="panel-meta" id="modal-hint" style="margin:0"></div>
-        </div>
+        <div class="full note" id="modal-hint"></div>
       </div>
       <div class="actions">
         <button id="modal-cancel" class="btn">Cancel</button>
-        <button id="modal-save" class="btn btn-success">Save</button>
+        <button id="modal-save" class="btn btn-good"><i data-ic="save"></i>Save</button>
       </div>
     </div>
   </div>
 
+  <script src="/web/ui.js"></script>
   <script src="/web/discover.js"></script>
 </body>
 </html>

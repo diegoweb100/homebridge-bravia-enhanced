@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark">
+  <title>Recordings · Bravia Enhanced</title>
+  <!-- recordings.html v1.4.21 (homebridge-bravia-enhanced by diegoweb100) -->
+  <link rel="stylesheet" href="/web/ui.css">
+</head>
+<body>
+  <div id="hdr"></div>
+
+  <main>
+    <!-- USB requirement, always visible -->
+    <div class="usb-note">
+      <div class="ui"><i data-ic="usb"></i></div>
+      <div><b>Needs a USB hard drive connected to the TV</b>
+        <span>Recordings live on the drive plugged into the TV and registered for recording (TV menu → Settings → Recording setup). Without it this page, the recordings in the Home app and “Record now” are not available.</span></div>
+    </div>
+
+    <section class="panel" id="rec-panel">
+      <div class="ph">
+        <div class="si"><i data-ic="rec"></i></div>
+        <div class="grow"><h2>Recordings</h2><p id="rec-sub">Play, protect or delete what the TV recorded.</p></div>
+        <button class="btn btn-ghost" id="rec-refresh"><i data-ic="refresh"></i>Refresh</button>
+      </div>
+      <div class="cards hidden" id="rec-cards">
+        <div class="card acc"><div class="ct"><i data-ic="rec"></i>Recordings</div><div class="cv" id="k-n">–</div><div class="cs" id="k-new"></div></div>
+        <div class="card"><div class="ct"><i data-ic="clock"></i>Total length</div><div class="cv" id="k-len">–</div><div class="cs">on the USB drive</div></div>
+        <div class="card"><div class="ct"><i data-ic="lock"></i>Protected</div><div class="cv" id="k-prot">–</div><div class="cs">cannot be deleted</div></div>
+        <div class="card" id="k-st-card"><div class="ct"><i data-ic="spark"></i>Recorder</div><div class="cv sm" id="k-st">–</div><div class="cs" id="k-sched"></div></div>
+      </div>
+      <div class="toolbar hidden" id="rec-tools" style="margin-top:16px">
+        <div class="inp-ic grow"><i data-ic="search"></i><input class="inp" id="rec-q" placeholder="Search title or channel" autocomplete="off"></div>
+        <div class="seg" id="rec-sort">
+          <button data-s="date" class="on">Newest</button><button data-s="title">A–Z</button><button data-s="len">Longest</button>
+        </div>
+      </div>
+      <div id="rec-list" style="margin-top:14px"><div class="empty"><span class="spin"></span></div></div>
+    </section>
+
+    <section class="panel hidden" id="sched-panel">
+      <div class="ph">
+        <div class="si"><i data-ic="clock"></i></div>
+        <div class="grow"><h2>Scheduled</h2><p>Timers set on the TV (read-only here: set them from the TV guide).</p></div>
+      </div>
+      <div id="sched-list"></div>
+    </section>
+
+    <section class="panel hidden" id="hist-panel">
+      <div class="ph">
+        <div class="si"><i data-ic="alert"></i></div>
+        <div class="grow"><h2>Recording problems</h2><p>What the TV reports about recordings that did not complete.</p></div>
+      </div>
+      <div id="hist-list"></div>
+    </section>
+  </main>
+
+  <script src="/web/ui.js"></script>
+  <script src="/web/recordings.js"></script>
+</body>
+</html>

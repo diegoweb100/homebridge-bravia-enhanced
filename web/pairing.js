@@ -1,196 +1,199 @@
-(function(){
-  const toastContainer = document.getElementById('toast-container');
-  const tvNameInput = document.getElementById('tv-name');
-  const backBtn = document.getElementById('back-btn');
-  const statusPill = document.getElementById('pair-status');
-  const pinInput = document.getElementById('pin-input');
-  const submitBtn = document.getElementById('submit-pin');
-  const pinCard = document.getElementById('pin-card');
-  const pairedCard = document.getElementById('paired-card');
-  const forceUnpairBtn = document.getElementById('force-unpair-btn');
+// Pairing & device — homebridge-bravia-enhanced v1.4.21 (diegoweb100)
+// Talks to: GET /api/status, /api/pairing-status, /api/device-info, /api/diagnostics ;
+//           POST /api/request-pin, /api/pin, /api/delete-cookie
+(function () {
+  'use strict';
+  var B = window.BUI, esc = B.esc;
+  B.hydrate();
+  var $ = function (id) { return document.getElementById(id); };
+  var tv = B.qs('tv');
+  var otp = Array.prototype.slice.call(document.querySelectorAll('#otp input'));
 
-  function escapeHtml(str){
-    return String(str)
-      .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
-      .replaceAll('"','&quot;').replaceAll("'",'&#39;');
+  function step(n) {
+    [1, 2, 3].forEach(function (i) {
+      var el = $('st' + i);
+      el.classList.toggle('act', i === n);
+      el.classList.toggle('done', i < n);
+    });
   }
 
-  function showToast(kind, title, message){
-    const toast = document.createElement('div');
-    toast.className = `toast ${kind}`;
-    toast.innerHTML = `<div class="toast-title">${escapeHtml(title)}</div><div class="toast-msg">${escapeHtml(message)}</div>`;
-    toastContainer.appendChild(toast);
-    const ttl = kind === 'error' ? 7000 : 4500;
-    setTimeout(()=>{ toast.style.opacity='0'; toast.style.transition='opacity 0.25s ease'; setTimeout(()=>toast.remove(),260); }, ttl);
-  }
+  function pinValue() { return otp.map(function (i) { return i.value; }).join(''); }
+  function updatePinBtn() { $('submit-pin').disabled = !/^\d{4}$/.test(pinValue()); }
 
-  function getTvFromQuery(){
-    const u = new URL(window.location.href);
-    return u.searchParams.get('tv') || '';
-  }
-
-  const tv = getTvFromQuery();
-  tvNameInput.value = tv || '(missing tv)';
-
-  backBtn.addEventListener('click', ()=>{
-    if (tv) window.location.href = `/?tv=${encodeURIComponent(tv)}`;
-    else window.location.href = '/';
+  otp.forEach(function (inp, idx) {
+    inp.addEventListener('input', function () {
+      inp.value = inp.value.replace(/\D/g, '').slice(-1);
+      if (inp.value && otp[idx + 1]) otp[idx + 1].focus();
+      if (inp.value) step(3);
+      updatePinBtn();
+    });
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Backspace' && !inp.value && otp[idx - 1]) otp[idx - 1].focus();
+      if (e.key === 'Enter' && !$('submit-pin').disabled) submitPin();
+    });
+    inp.addEventListener('paste', function (e) {
+      var t = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 4);
+      if (!t) return;
+      e.preventDefault();
+      otp.forEach(function (o, i) { o.value = t[i] || ''; });
+      (otp[Math.min(t.length, 3)]).focus();
+      step(3); updatePinBtn();
+    });
   });
 
-  async function refreshStatus(){
-    if (!tv){
-      statusPill.textContent = 'Missing tv parameter';
-      pinCard.classList.add('hidden');
-      return;
-    }
-    try{
-      const r = await fetch(`/api/pairing-status?tv=${encodeURIComponent(tv)}`);
-      const data = await r.json();
-      if (!data.success) throw new Error(data.message || 'status failed');
-
-      if (data.paired && !data.pinRequired){
-        statusPill.textContent = 'Paired ✅';
-        pairedCard.classList.remove('hidden');
-        pinCard.classList.add('hidden');
+  function refreshStatus() {
+    if (!tv) { $('pin-card').classList.add('hidden'); return Promise.resolve(); }
+    return B.fetchJson('/api/pairing-status?tv=' + encodeURIComponent(tv)).then(function (d) {
+      if (!d.success) throw new Error(d.message || 'status failed');
+      var s = B.status || {};
+      var paired = d.paired && !d.pinRequired;
+      $('paired-card').classList.toggle('hidden', !paired);
+      $('pin-card').classList.toggle('hidden', paired);
+      $('danger-card').classList.toggle('hidden', !paired || s.authMode === 'psk');
+      if (paired) {
+        if (s.authMode === 'psk') {
+          $('ok-title').textContent = 'PSK authentication active';
+          $('ok-sub').textContent = 'This TV uses a Pre-Shared Key: no PIN pairing is needed.';
+        } else {
+          $('ok-title').textContent = 'Paired with ' + (tv || 'the TV');
+          $('ok-sub').textContent = s.authenticated ? 'Authenticated and connected.' : 'Pairing stored. The plugin reconnects as soon as the TV is on.';
+        }
       } else {
-        statusPill.textContent = 'PIN required';
-        pairedCard.classList.add('hidden');
-        pinCard.classList.remove('hidden');
+        step(s.power ? 2 : 1);
+        setTimeout(function () { otp[0].focus(); }, 50);
       }
-    }catch(e){
-      statusPill.textContent = 'Status error';
-      showToast('error','Error','Unable to read pairing status');
-    }
+    }).catch(function (e) { B.toast('error', 'Status error', e.message); });
   }
 
-  async function loadDeviceInfo(){
-    try {
-      const r = await fetch(`/api/device-info?tv=${encodeURIComponent(tv)}`);
-      const data = await r.json();
-      if (!data.success || !data.data) return;
-      const d = data.data;
-      const statusEl = document.getElementById('device-info-status');
-      const modelEl = document.getElementById('di-model');
-      const serialEl = document.getElementById('di-serial');
-      const firmwareEl = document.getElementById('di-firmware');
-      const interfaceEl = document.getElementById('di-interface');
-      const apisEl = document.getElementById('di-apis');
-      const detectedEl = document.getElementById('di-detected-at');
-
-      // Interface info (always available — no auth)
-      if (d.interface) {
-        modelEl.textContent = (d.interface.productName || '') + ' ' + (d.interface.modelName || '') || '—';
-        interfaceEl.textContent = d.interface.interfaceVersion || '—';
-      }
-      // System info (available after pairing)
-      if (d.system) {
-        if (d.system.model) modelEl.textContent = d.system.model;
-        serialEl.textContent = d.system.serial || '—';
-        firmwareEl.textContent = (d.system.generation || '—');
-      } else {
-        serialEl.textContent = 'Available after pairing';
-        firmwareEl.textContent = 'Available after pairing';
-      }
-      // API versions
-      if (d.apiVersions && Object.keys(d.apiVersions).length > 0) {
-        apisEl.textContent = Object.entries(d.apiVersions).map(([k,v]) => k + ': v' + v).join(' | ');
-      }
-      // Detected at
-      if (d.detectedAt) {
-        detectedEl.textContent = 'Last detected: ' + new Date(d.detectedAt).toLocaleString();
-      }
-      if (statusEl) statusEl.textContent = d.interface ? '✅ Info loaded' : '⏳ Partial';
-    } catch(e) {
-      const statusEl = document.getElementById('device-info-status');
-      if (statusEl) statusEl.textContent = 'Unavailable';
-    }
+  function loadDeviceInfo() {
+    return B.fetchJson('/api/device-info?tv=' + encodeURIComponent(tv)).then(function (r) {
+      if (!r.success || !r.data) return;
+      var d = r.data, s = B.status || {};
+      var i = d.interface || {}, y = d.system || {};
+      $('di-model').textContent = y.model || i.modelName || '–';
+      $('di-product').textContent = i.productName || '';
+      $('di-ip').textContent = d.ip || '–';
+      $('di-mode').textContent = s.authMode === 'psk' ? 'Pre-Shared Key' : 'PIN + cookie';
+      $('di-serial').textContent = y.serial || (i.modelName ? 'after pairing' : '–');
+      $('di-interface').textContent = i.interfaceVersion ? 'v' + i.interfaceVersion : '–';
+      $('di-firmware').textContent = y.generation ? 'generation ' + y.generation : '';
+      var apis = d.apiVersions || {};
+      var keys = Object.keys(apis).sort();
+      $('di-apis').innerHTML = keys.length ? keys.map(function (k) { return '<span>' + esc(k) + ' <b>v' + esc(apis[k]) + '</b></span>'; }).join('') : '<span>not detected yet (TV off?)</span>';
+      if (d.detectedAt) $('di-detected-at').textContent = 'What the TV reports about itself · last read ' + new Date(d.detectedAt).toLocaleString();
+    }).catch(function () {});
   }
 
-  async function submitPin(){
-    const pin = (pinInput.value || '').trim();
-    if (!pin){ showToast('warn','PIN missing','Enter the PIN shown on the TV'); return; }
-    submitBtn.disabled = true;
-    try{
-      const r = await fetch(`/api/pin?tv=${encodeURIComponent(tv)}`,{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ pin })
-      });
-      const data = await r.json();
-      if (data.success){
-        showToast('success','Sent','PIN sent, completing pairing…');
-        pinInput.value = '';
-        setTimeout(refreshStatus, 1000);
-      } else {
-        showToast('error','Rejected', data.message || 'PIN rejected');
-      }
-    }catch(e){
-      showToast('error','Error','Network error while sending PIN');
-    }finally{
-      submitBtn.disabled = false;
-    }
+  function submitPin() {
+    var pin = pinValue();
+    if (!/^\d{4}$/.test(pin)) { B.toast('warn', 'PIN incomplete', 'Type the 4 digits shown on the TV.'); return; }
+    var btn = $('submit-pin'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Pairing…';
+    B.fetchJson('/api/pin?tv=' + encodeURIComponent(tv), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: pin }) })
+      .then(function (d) {
+        if (!d.success) throw new Error(d.message || 'PIN rejected');
+        B.toast('success', 'PIN sent', 'Completing pairing…');
+        otp.forEach(function (o) { o.value = ''; });
+        // Poll a few times: the TV answers asynchronously.
+        var tries = 0;
+        var poll = function () {
+          tries++;
+          B.header(hdrOpts).then(refreshStatus).then(function () {
+            if ($('pin-card').classList.contains('hidden')) { B.toast('success', 'Paired', 'You can now choose the channels.'); loadDeviceInfo(); }
+            else if (tries < 5) setTimeout(poll, 1500);
+            else B.toast('warn', 'Not paired yet', 'The TV did not accept the PIN. Show a new PIN and try again.');
+          });
+        };
+        setTimeout(poll, 1200);
+      })
+      .catch(function (e) { B.toast('error', 'Rejected', e.message); })
+      .then(function () { btn.innerHTML = B.icon('check') + 'Pair'; updatePinBtn(); });
   }
 
-  async function forceUnpair(){
-    if (!confirm('Delete the stored cookie and force re-pairing?\nThe TV will show a new PIN.')) return;
-    forceUnpairBtn.disabled = true;
-    try{
-      const r = await fetch(`/api/delete-cookie?tv=${encodeURIComponent(tv)}`,{
-        method:'POST'
-      });
-      // Detect server-side route mismatch where the fallback handler returns HTML
-      // instead of the expected JSON response (was the case before plugin v1.4.6
-      // when /api/delete-cookie was not registered as a server route).
-      const ctype = (r.headers && r.headers.get) ? (r.headers.get('content-type') || '') : '';
-      if (ctype.indexOf('application/json') === -1) {
-        showToast('error','Server error','Endpoint did not return JSON (status '+ r.status +'). Plugin may need to be updated to v1.4.6 or later.');
+  function requestPin() {
+    var btn = $('request-pin-btn'); btn.disabled = true;
+    B.fetchJson('/api/request-pin?tv=' + encodeURIComponent(tv), { method: 'POST' })
+      .then(function (d) {
+        if (!d.success) throw new Error(d.message || 'Could not request PIN');
+        B.toast('success', 'Look at the TV', d.message || 'A PIN is now shown on the TV screen.');
+        step(3); otp[0].focus();
+      })
+      .catch(function (e) { B.toast('error', 'Error', e.message); })
+      .then(function () { btn.disabled = false; });
+  }
+
+  function forceUnpair() {
+    if (!confirm('Delete the stored cookie and pair again?\nThe TV will need to show a new PIN.')) return;
+    var btn = $('force-unpair-btn'); btn.disabled = true;
+    B.fetchJson('/api/delete-cookie?tv=' + encodeURIComponent(tv), { method: 'POST' })
+      .then(function (d) {
+        if (!d.success) throw new Error(d.message || 'Could not delete cookie');
+        B.toast('success', 'Cookie deleted', 'Pair again: switch the TV on and show the PIN.');
+        return B.header(hdrOpts).then(refreshStatus);
+      })
+      .catch(function (e) { B.toast('error', 'Error', e.message); })
+      .then(function () { btn.disabled = false; });
+  }
+
+  // Diagnostics ---------------------------------------------------------------
+  var SAVING = { off: 'Off', low: 'Low', high: 'High', pictureOff: 'Screen off' };
+  var PRETTY = function (v) { return String(v || '').replace(/([a-z])([A-Z0-9])/g, '$1 $2').replace(/^./, function (c) { return c.toUpperCase(); }); };
+  function card(cls, ic, title, value, sub, mono) {
+    return '<div class="card ' + cls + '"><div class="ct">' + B.icon(ic) + esc(title) + '</div>' +
+      '<div class="cv sm' + (mono ? ' mono' : '') + '">' + esc(value) + '</div><div class="cs">' + esc(sub || '') + '</div></div>';
+  }
+  function loadDiagnostics() {
+    $('dg-refresh').disabled = true;
+    return B.fetchJson('/api/diagnostics').then(function (d) {
+      if (!d.success) throw new Error(d.message || 'error');
+      if (!d.tvOn) {
+        $('dg-cards').innerHTML = '<div class="card warn" style="grid-column:1/-1"><div class="ct">' + B.icon('power') + 'TV off</div><div class="cv sm">Switch the TV on to read its settings</div></div>';
+        $('dg-modes').classList.add('hidden');
         return;
       }
-      const data = await r.json();
-      if (data.success){
-        showToast('success','Cookie deleted', data.message || 'Re-pairing required. Turn on the TV to get a new PIN.');
-        setTimeout(refreshStatus, 800);
-      } else {
-        showToast('error','Error', data.message || 'Could not delete cookie');
+      var n = d.network || {};
+      var t = d.tvTime ? (typeof d.tvTime === 'string' ? d.tvTime : d.tvTime.dateTime) : '';
+      var skew = '';
+      if (t) {
+        var diff = Math.round((new Date(t.replace(/([+-]\d\d)(\d\d)$/, '$1:$2')).getTime() - Date.now()) / 1000);
+        if (!isNaN(diff)) skew = Math.abs(diff) < 90 ? 'in sync with Homebridge' : 'differs by ' + Math.round(diff / 60) + ' min';
       }
-    }catch(e){
-      showToast('error','Error','Network error while deleting cookie: ' + (e && e.message ? e.message : e));
-    }finally{
-      forceUnpairBtn.disabled = false;
-    }
+      var playing = d.playing ? (d.playing.title || d.playing.uri || '') : '';
+      var html = '';
+      html += card(d.wolEnabled ? 'good' : 'bad', 'power', 'Wake-on-LAN', d.wolEnabled === null ? 'unknown' : (d.wolEnabled ? 'Enabled' : 'Disabled'),
+        d.wolEnabled === false ? 'Turn on “Remote start” on the TV, or HomeKit cannot switch it on' : 'the TV can be switched on from HomeKit');
+      html += card('', 'lan', 'Network', (n.netif === 'eth0' ? 'Ethernet' : (n.netif === 'wlan0' ? 'Wi-Fi' : (n.netif || '–'))) + (n.ip ? ' · ' + n.ip : ''),
+        (n.mac ? 'MAC ' + n.mac : '') + (n.gateway ? ' · gw ' + n.gateway : ''), false);
+      html += card(d.powerSavingMode && d.powerSavingMode !== 'off' ? 'warn' : 'good', 'spark', 'Power saving', SAVING[d.powerSavingMode] || PRETTY(d.powerSavingMode) || '–',
+        d.powerSavingMode === 'pictureOff' ? 'picture is off, sound only' : 'picture brightness setting');
+      html += card('acc', 'hd', 'Picture mode', PRETTY(d.pictureMode) || '–', d.pictureModes.length ? d.pictureModes.length + ' modes available' : '');
+      html += card(d.usbRecordingDrive ? 'good' : '', 'save', 'USB recording drive', d.usbRecordingDrive ? 'Connected' : 'Not connected',
+        d.usbRecordingDrive ? 'recording status: ' + PRETTY(d.recordingStatus || 'unknown') : 'recordings need a USB drive registered on the TV');
+      html += card('', 'info', 'TV clock', t ? t.replace('T', ' ').slice(0, 16) : '–', skew);
+      html += card('', 'tv', 'Now playing', playing || '–', d.playing && d.playing.dispNum ? 'channel ' + parseInt(d.playing.dispNum, 10) : (d.playing && d.playing.source ? d.playing.source : ''));
+      html += card(d.remoteKeys ? 'good' : 'warn', 'key', 'Remote keys', d.remoteKeys ? d.remoteKeys + ' keys' : 'not read yet', 'used by TV functions (Teletext, Guide…)');
+      $('dg-cards').innerHTML = html;
+      if (d.pictureModes.length) {
+        $('dg-modelist').innerHTML = d.pictureModes.map(function (m) {
+          return '<span>' + (m === d.pictureMode ? '<b>' + esc(m) + ' ✓</b>' : esc(m)) + '</span>';
+        }).join('');
+        $('dg-modes').classList.remove('hidden');
+      }
+    }).catch(function (e) {
+      $('dg-cards').innerHTML = '<div class="card bad" style="grid-column:1/-1"><div class="ct">' + B.icon('alert') + 'Not available</div><div class="cv sm">' + esc(e.message) + '</div></div>';
+    }).then(function () { $('dg-refresh').disabled = false; });
   }
+  $('dg-refresh').addEventListener('click', loadDiagnostics);
 
-  async function requestPin(){
-    const requestPinBtn = document.getElementById('request-pin-btn');
-    if (requestPinBtn) requestPinBtn.disabled = true;
-    try{
-      const r = await fetch(`/api/request-pin?tv=${encodeURIComponent(tv)}`,{
-        method:'POST'
-      });
-      const ctype = (r.headers && r.headers.get) ? (r.headers.get('content-type') || '') : '';
-      if (ctype.indexOf('application/json') === -1) {
-        showToast('error','Server error','Plugin may need to be updated to v1.4.11 or later.');
-        return;
-      }
-      const data = await r.json();
-      if (data.success){
-        showToast('success','PIN requested', data.message || 'Check your TV screen for the PIN.');
-      } else {
-        showToast('error','Error', data.message || 'Could not request PIN');
-      }
-    }catch(e){
-      showToast('error','Error','Network error: ' + (e && e.message ? e.message : e));
-    }finally{
-      if (requestPinBtn) requestPinBtn.disabled = false;
-    }
-  }
+  $('submit-pin').addEventListener('click', submitPin);
+  $('request-pin-btn').addEventListener('click', requestPin);
+  $('force-unpair-btn').addEventListener('click', forceUnpair);
 
-  submitBtn.addEventListener('click', submitPin);
-  pinInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitPin(); });
-  forceUnpairBtn.addEventListener('click', forceUnpair);
-  const requestPinBtn = document.getElementById('request-pin-btn');
-  if (requestPinBtn) requestPinBtn.addEventListener('click', requestPin);
-
-  refreshStatus();
-  loadDeviceInfo();
+  var hdrOpts = { active: 'pairing', title: 'Pairing & device', sub: 'Connect the plugin to the TV and check what it reports.' };
+  B.header(hdrOpts).then(function (s) {
+    if (!tv && s && s.tv) tv = s.tv.name;
+    $('to-channels').href = '/?tv=' + encodeURIComponent(tv || '');
+    if (!tv) { B.toast('error', 'Missing TV', 'Open this page from the plugin log link.'); return; }
+    B.footer();
+    return Promise.all([refreshStatus(), loadDeviceInfo(), loadDiagnostics()]);
+  });
 })();

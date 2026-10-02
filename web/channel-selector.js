@@ -1,492 +1,340 @@
-// Channel Selector JavaScript
-// VERSION: channel-selector.js v1.4.18 (homebridge-bravia-enhanced by diegoweb100)
+// Channel Selector — homebridge-bravia-enhanced v1.4.21 (diegoweb100)
+// Talks to: GET /api/status, /api/scan[?rescan=1], /api/selection, /api/inputs ; POST /api/save
 (function () {
   'use strict';
+  var B = window.BUI, icon = B.icon, esc = B.esc;
+  B.hydrate();
 
-  const VERSION = 'v1.4.18';
-
-  // State
-  const state = {
-    tvs: [],
-    selectedTV: null,
-    channels: [],
-    selectedChannels: new Set(),
-    maxChannels: 98,
-    isScanning: false,
-    isBusy: false
+  var S = {
+    tv: null, max: 97,
+    channels: [],            // [{name, uri, sourceType, type, channelNumber}]
+    saved: new Map(),        // uri -> saved object (with identifier)
+    sel: new Set(),          // currently ticked uris
+    inputs: new Map(),       // uri -> {connection,label}
+    type: 'all', q: '', onlySel: false, busy: false
   };
+  var $ = function (id) { return document.getElementById(id); };
 
-  // DOM Elements
-  const el = {
-    tvSelect: document.getElementById('tv-select'),
-    pairingBtn: document.getElementById('pairing-btn'),
-    statusContainer: document.getElementById('status-container'),
-    toastContainer: document.getElementById('toast-container'),
-    statsBar: document.getElementById('stats-bar'),
-    controls: document.getElementById('controls'),
-    channelListContainer: document.getElementById('channel-list-container'),
-    channelList: document.getElementById('channel-list'),
-    loading: document.getElementById('loading'),
-    emptyState: document.getElementById('empty-state'),
-    initialScan: document.getElementById('initial-scan'),
-    saveSection: document.getElementById('save-section'),
-    scanBtn: document.getElementById('scan-btn'),
-    rescanBtn: document.getElementById('rescan-btn'),
-    saveBtn: document.getElementById('save-btn'),
-    saveBtnTop: document.getElementById('save-btn-top'),
-    searchInput: document.getElementById('search-input'),
-    typeFilter: document.getElementById('type-filter'),
-    selectAllBtn: document.getElementById('select-all'),
-    selectNoneBtn: document.getElementById('select-none'),
-    selectHDBtn: document.getElementById('select-hd'),
-    selectTop20Btn: document.getElementById('select-top20'),
-    selectedCount: document.getElementById('selected-count'),
-    maxCount: document.getElementById('max-count'),
-    totalCount: document.getElementById('total-count')
+  var TYPES = {
+    tv: { label: 'TV channels', ic: 'antenna' },
+    radio: { label: 'Radio', ic: 'radio' },
+    hdmi: { label: 'Inputs', ic: 'hdmi' },
+    fn: { label: 'TV functions', ic: 'spark' },
+    rec: { label: 'Recordings on the USB drive', ic: 'rec' },
+    app: { label: 'Apps', ic: 'app' }
   };
-
-  function log(...args) { console.log('[BraviaChannelSelector]', ...args); }
-
-  // Toasts
-  function toast(kind, title, msg, ms = 3800) {
-    if (!el.toastContainer) return;
-    const div = document.createElement('div');
-    div.className = `toast ${kind}`;
-    div.innerHTML = `<div class="toast-title">${escapeHtml(title)}</div><div class="toast-msg">${escapeHtml(msg)}</div>`;
-    el.toastContainer.appendChild(div);
-    setTimeout(() => {
-      div.style.transition = 'opacity .2s ease, transform .2s ease';
-      div.style.opacity = '0';
-      div.style.transform = 'translateY(-6px)';
-      setTimeout(() => div.remove(), 250);
-    }, ms);
-  }
-
-  function escapeHtml(s) {
-    return String(s ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
-  }
-
-  function setButtonsDisabled(disabled) {
-    const ids = ['scanBtn', 'rescanBtn', 'saveBtn', 'saveBtnTop', 'selectAllBtn', 'selectNoneBtn', 'selectHDBtn', 'selectTop20Btn'];
-    ids.forEach(k => { if (el[k]) el[k].disabled = disabled; });
-    if (el.tvSelect) el.tvSelect.disabled = disabled;
-    if (el.searchInput) el.searchInput.disabled = disabled;
-    if (el.typeFilter) el.typeFilter.disabled = disabled;
-  }
-
-  function showSection(sec, show) {
-    if (!sec) return;
-    sec.classList.toggle('hidden', !show);
-  }
-
-  function updateSaveButtonsVisibility() {
-    const hasChannels = state.channels && state.channels.length > 0;
-    const show = hasChannels;
-    showSection(el.saveSection, show);
-    showSection(el.saveBtnTop, show);
-  }
-
-  // Pairing visibility: show "Pairing PIN" only if pin is required
-  async function updatePairingButtonVisibility() {
-    if (!el.pairingBtn) return;
-
-    if (!state.selectedTV) {
-      el.pairingBtn.classList.add('hidden');
-      el.pairingBtn.disabled = true;
-      return;
-    }
-
-    try {
-      const r = await fetch(`/api/pairing-status?tv=${encodeURIComponent(state.selectedTV)}`, { cache: 'no-store' });
-      const data = await r.json();
-      const pinRequired = !!(data && data.success && data.pinRequired);
-
-      if (pinRequired) {
-        el.pairingBtn.classList.remove('hidden');
-        el.pairingBtn.disabled = false;
-      } else {
-        el.pairingBtn.classList.add('hidden');
-        el.pairingBtn.disabled = true;
-      }
-    } catch (e) {
-      // If pairing status endpoint fails, don't block UI.
-      log('pairing-status failed', e);
-      el.pairingBtn.classList.add('hidden');
-      el.pairingBtn.disabled = true;
-    }
-  }
-
-  // Load TVs
-  async function loadTVs() {
-    try {
-      const response = await fetch('/api/tvs', { cache: 'no-store' });
-      const data = await response.json();
-
-      if (data.success) {
-        state.tvs = data.tvs || [];
-        populateTVSelector();
-      } else {
-        toast('error', 'Error', 'Failed to load TVs: ' + (data.error || data.message || 'Unknown error'));
-      }
-    } catch (error) {
-      toast('error', 'Error', 'Error connecting to server: ' + error.message);
-    }
-  }
-
-  function populateTVSelector() {
-    el.tvSelect.innerHTML = '';
-    if (state.tvs.length === 0) {
-      el.tvSelect.innerHTML = '<option value="">No TVs configured</option>';
-      return;
-    }
-
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = 'Select a TV...';
-    el.tvSelect.appendChild(placeholder);
-
-    state.tvs.forEach(tv => {
-      const option = document.createElement('option');
-      option.value = tv.name;
-      option.textContent = `${tv.name} (${tv.ip})`;
-      el.tvSelect.appendChild(option);
-    });
-  }
-
-  // Scan
-  async function scanTV(isRescan = false) {
-    if (state.isBusy) return;
-
-    // IMPORTANT: never leave isBusy=true on early returns
-    state.isBusy = true;
-    setButtonsDisabled(true);
-
-    try {
-      if (!state.selectedTV) {
-        toast('error', 'Missing TV', 'Please select a TV first');
-        return;
-      }
-
-      await updatePairingButtonVisibility();
-      if (el.pairingBtn && !el.pairingBtn.classList.contains('hidden')) {
-        toast('warn', 'Pairing required', 'Click "Pairing PIN" and enter the PIN shown on the TV (first time only).');
-        return;
-      }
-
-      if (state.isScanning) {
-        toast('info', 'Scan already running', 'Please wait...');
-        return;
-      }
-
-      state.isScanning = true;
-      showSection(el.loading, true);
-      showSection(el.emptyState, false);
-      showSection(el.channelListContainer, false);
-      showSection(el.controls, false);
-      showSection(el.statsBar, false);
-      showSection(el.saveSection, false);
-      showSection(el.saveBtnTop, false);
-
-      const response = await fetch(`/api/scan?tv=${encodeURIComponent(state.selectedTV)}${isRescan ? '&rescan=1' : ''}`, { cache: 'no-store' });
-      const data = await response.json();
-
-      if (!data.success) {
-        toast('error', 'Scan failed', data.error || data.message || 'Unknown error');
-        showSection(el.emptyState, true);
-        return;
-      }
-
-      state.channels = data.channels || [];
-      state.maxChannels = data.maxChannels || 98;
-
-      el.maxCount.textContent = String(state.maxChannels);
-      el.totalCount.textContent = String(state.channels.length);
-
-      await loadSavedSelection();
-      renderChannels();
-
-      showSection(el.controls, true);
-      showSection(el.statsBar, true);
-      showSection(el.channelListContainer, true);
-      updateSaveButtonsVisibility();
-
-      toast('success', 'Scan complete', `Found ${state.channels.length} channels (HomeKit max ${state.maxChannels})`);
-    } catch (e) {
-      toast('error', 'Scan error', e.message || String(e));
-      showSection(el.emptyState, true);
-    } finally {
-      state.isScanning = false;
-      showSection(el.loading, false);
-      state.isBusy = false;
-      setButtonsDisabled(false);
-    }
-  }
-
-  async function loadSavedSelection() {
-    try {
-      const response = await fetch(`/api/selection?tv=${encodeURIComponent(state.selectedTV)}`, { cache: 'no-store' });
-      const data = await response.json();
-
-      state.selectedChannels.clear();
-      const selection = data && data.success ? (data.selection || []) : [];
-      selection.forEach(uri => state.selectedChannels.add(uri));
-
-      updateStats();
-    } catch (e) {
-      log('loadSavedSelection error', e);
-    }
-  }
-
-  // Save
-  async function saveSelection() {
-    if (state.isBusy) return;
-
-    state.isBusy = true;
-    setButtonsDisabled(true);
-
-    try {
-      if (!state.selectedTV) {
-        toast('error', 'Missing TV', 'No TV selected');
-        return;
-      }
-
-      const selectedChannelData = state.channels.filter(ch => state.selectedChannels.has(ch.uri));
-
-      if (selectedChannelData.length === 0) {
-        toast('warn', 'Nothing selected', 'Please select at least one channel');
-        return;
-      }
-      if (selectedChannelData.length > state.maxChannels) {
-        toast('error', 'Too many channels', `Selected ${selectedChannelData.length}/${state.maxChannels}`);
-        return;
-      }
-
-      if (el.saveBtn) { el.saveBtn.textContent = '💾 Saving...'; }
-      if (el.saveBtnTop) { el.saveBtnTop.textContent = '💾 Saving...'; }
-
-      const response = await fetch('/api/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tv: state.selectedTV, channels: selectedChannelData })
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        toast('success', 'Saved', `Saved ${selectedChannelData.length} channels. Homebridge will restart to apply changes.`);
-      } else {
-        toast('error', 'Save failed', data.error || data.message || 'Unknown error');
-      }
-    } catch (e) {
-      toast('error', 'Save error', e.message || String(e));
-    } finally {
-      if (el.saveBtn) { el.saveBtn.textContent = '💾 Save Selection'; }
-      if (el.saveBtnTop) { el.saveBtnTop.textContent = '💾 Save Selection'; }
-      state.isBusy = false;
-      setButtonsDisabled(false);
-    }
-  }
-
-  // Rendering
-  function normalizeType(ch) {
-    // server may send type/sourceType; normalize to tv/app/hdmi
-    if (ch.type) return ch.type;
-    if (ch.sourceType === 2) return 'tv';
-    if (ch.sourceType === 10) return 'app';
+  function typeOf(ch) {
+    if (ch.type === 'radio' || ch.type === 'fn' || ch.type === 'rec') return ch.type;
+    if (typeof ch.uri === 'string' && ch.uri.indexOf('usb:recStorage') === 0) return 'rec';
+    if (typeof ch.uri === 'string' && ch.uri.indexOf('ircc:') === 0) return 'fn';
+    if (ch.type === 'tv' || ch.sourceType === 2) return 'tv';
+    if (ch.type === 'app' || ch.sourceType === 10) return 'app';
     return 'hdmi';
   }
 
-  function renderChannels() {
-    el.channelList.innerHTML = '';
-    const filterText = (el.searchInput?.value || '').trim().toLowerCase();
-    const filterType = el.typeFilter?.value || 'all';
+  // Apps / TV functions / recordings can live in their own Home tiles
+  // (appsAccessory, functionsAccessory, recordingsAccessory): they then do not
+  // count towards the TV's input limit.
+  var SPLIT = { app: 'apps', fn: 'functions', rec: 'recordings' };
+  var TILE = { app: 'Apps', fn: 'Functions', rec: 'Recordings' };
+  function separate(t) { var ti = (B.status && B.status.tiles) || {}; return !!(SPLIT[t] && ti[SPLIT[t]]); }
+  function tvName() { return (B.status && B.status.tv && B.status.tv.name) || S.tv; }
+  function mainCount() {
+    var n = 0;
+    S.channels.forEach(function (c) { if (S.sel.has(c.uri) && !separate(typeOf(c))) n++; });
+    return n;
+  }
+  function chOf(uri) { for (var i = 0; i < S.channels.length; i++) if (S.channels[i].uri === uri) return S.channels[i]; return null; }
 
-    let list = state.channels.slice();
-    if (filterText) list = list.filter(ch => (ch.name || '').toLowerCase().includes(filterText));
-    if (filterType !== 'all') list = list.filter(ch => normalizeType(ch) === filterType);
+  // ── Data ────────────────────────────────────────────────────────────────
+  function tvParam() { return 'tv=' + encodeURIComponent(S.tv); }
 
-    if (list.length === 0) {
-      el.channelList.innerHTML = '<div class="empty-state" style="padding:16px;text-align:center">No channels match your filters</div>';
-      updateStats(0);
-      return;
+  function loadAll(rescan) {
+    S.busy = true;
+    renderSkeleton(rescan);
+    return Promise.all([
+      B.fetchJson('/api/scan?' + tvParam() + (rescan ? '&rescan=1' : '')),
+      B.fetchJson('/api/selection?' + tvParam()),
+      B.fetchJson('/api/inputs?' + tvParam()).catch(function () { return null; })
+    ]).then(function (r) {
+      var scan = r[0], sel = r[1], inp = r[2];
+      if (!scan.success) throw new Error(scan.error || scan.message || 'scan failed');
+      S.channels = scan.channels || [];
+      S.max = scan.maxChannels || 97;
+      S.saved = new Map();
+      var savedList = (sel && sel.success) ? (sel.channels || (sel.selection || []).map(function (u) { return { uri: u }; })) : [];
+      savedList.forEach(function (c) { if (c && c.uri) S.saved.set(c.uri, c); });
+      S.sel = new Set(S.saved.keys());
+      S.inputs = new Map();
+      if (inp && inp.success) (inp.inputs || []).forEach(function (i) { S.inputs.set(i.uri, i); });
+      if (rescan && scan.rescan) {
+        if (scan.rescan === 'done') B.toast('success', 'Rescan complete', S.channels.length + ' items found on the TV');
+        else if (scan.rescan === 'tv-off') B.toast('warn', 'TV is off', 'Switch the TV on to read a fresh list. Showing the last scan.');
+        else if (scan.rescan === 'timeout') B.toast('warn', 'Still scanning', 'The TV is slow to answer; showing the last scan. Try again in a moment.');
+      }
+      if (S.channels.length === 0) {
+        renderEmpty();
+      } else {
+        render();
+      }
+    }).catch(function (e) {
+      $('list').innerHTML = '<div class="empty"><div class="big">' + icon('alert') + '</div><h3>Could not load the channel list</h3><p>' + esc(e.message) + '</p></div>';
+      B.toast('error', 'Error', e.message);
+    }).then(function () { S.busy = false; syncButtons(); });
+  }
+
+  // ── Rendering ───────────────────────────────────────────────────────────
+  function renderSkeleton(rescan) {
+    var h = '<div class="group-h">' + (rescan ? '<span class="spin"></span> Asking the TV for a fresh list… this can take ~20 s' : 'Loading…') + '<span class="line"></span></div><div class="tiles">';
+    for (var i = 0; i < 12; i++) h += '<div class="skel"></div>';
+    $('list').innerHTML = h + '</div>';
+  }
+
+  function renderEmpty() {
+    $('list').innerHTML = '<div class="empty"><div class="big">' + icon('tv') + '</div><h3>No channels yet</h3>' +
+      '<p>The plugin has not been able to read the list from the TV. Switch the TV on and press <b>Rescan TV</b>.</p></div>';
+    updateStats();
+  }
+
+  function visible(ch) {
+    var t = typeOf(ch);
+    if (S.type !== 'all' && t !== S.type && !(S.type === 'hdmi' && t === 'fn') && !(S.type === 'tv' && t === 'rec')) return false;
+    if (S.onlySel && !S.sel.has(ch.uri)) return false;
+    if (S.q && (ch.name || '').toLowerCase().indexOf(S.q) === -1) return false;
+    return true;
+  }
+
+  function tileHtml(ch) {
+    var t = typeOf(ch), uri = ch.uri, sel = S.sel.has(uri);
+    var changed = sel !== S.saved.has(uri);
+    var badge, sub;
+    if (t === 'tv' || t === 'radio') {
+      var num = (ch.channelNumber && ch.channelNumber !== 'N/A') ? String(ch.channelNumber) : '';
+      badge = num && num.length <= 4 ? esc(num) : icon(t === 'radio' ? 'radio' : 'antenna');
+      var q = /\b(4K|UHD)\b/i.test(ch.name || '') ? '<span class="pill good" style="padding:0 6px">4K</span> '
+            : (/\bHD\b/i.test(ch.name || '') ? '<span class="pill acc" style="padding:0 6px">HD</span> ' : '');
+      sub = t === 'radio' ? 'Digital radio' : q + 'Digital TV';
+    } else if (t === 'fn') {
+      badge = icon(uri === 'ircc:Rec' ? 'rec' : 'spark');
+      sub = uri === 'ircc:Rec' ? 'Remote key · needs the USB drive' : 'Remote key on the TV';
+    } else if (t === 'rec') {
+      badge = icon('rec');
+      var m = ch.rec || {};
+      var bits = [];
+      if (m.channelName) bits.push(esc(m.channelName));
+      if (m.startDateTime) bits.push(esc(String(m.startDateTime).slice(0, 10)));
+      if (m.durationSec) bits.push(Math.round(m.durationSec / 60) + ' min');
+      sub = bits.length ? bits.join(' · ') : 'Recording (USB drive)';
+    } else if (t === 'app') {
+      badge = icon('app');
+      sub = 'App';
+    } else {
+      badge = icon('hdmi');
+      var st = S.inputs.get(uri);
+      if (st) {
+        sub = '<span class="conn' + (st.connection ? ' on' : '') + '"></span>' + (st.connection ? (st.label ? esc(st.label) + ' · connected' : 'Connected') : 'Nothing connected');
+      } else {
+        sub = 'External input';
+      }
     }
-
-    const items = document.createElement('div');
-    items.className = 'channel-items';
-
-    // Option A: show separate sections (TV / HDMI / Applications) inside the same scroll list.
-    const order = ['tv', 'hdmi', 'app'];
-    const labels = { tv: 'TV Channels', hdmi: 'Inputs', app: 'Applications' };
-    const groups = new Map();
-    list.forEach(ch => {
-      const t = normalizeType(ch);
-      if (!groups.has(t)) groups.set(t, []);
-      groups.get(t).push(ch);
-    });
-
-    let renderedCount = 0;
-    order.forEach(t => {
-      const arr = groups.get(t);
-      if (!arr || arr.length === 0) return;
-
-      const h = document.createElement('div');
-      h.className = 'section-header';
-      h.textContent = labels[t] || t.toUpperCase();
-      items.appendChild(h);
-
-      arr.forEach(ch => {
-        items.appendChild(createChannelItem(ch));
-        renderedCount++;
-      });
-    });
-
-    // Render any other types we didn't expect
-    groups.forEach((arr, t) => {
-      if (order.includes(t)) return;
-      const h = document.createElement('div');
-      h.className = 'section-header';
-      h.textContent = (labels[t] || t).toUpperCase();
-      items.appendChild(h);
-      arr.forEach(ch => {
-        items.appendChild(createChannelItem(ch));
-        renderedCount++;
-      });
-    });
-
-    el.channelList.appendChild(items);
-    updateStats(renderedCount);
+    return '<div class="tile ' + t + (sel ? ' sel' : '') + (changed ? ' changed' : '') + '" data-uri="' + esc(uri) + '" role="checkbox" aria-checked="' + sel + '" tabindex="0" title="' + esc(ch.name) + '">' +
+      '<div class="ti">' + badge + '</div>' +
+      '<div class="tn"><b>' + esc(ch.name || uri) + '</b><small>' + sub + '</small></div>' +
+      '<div class="ck">' + icon('check') + '</div></div>';
   }
 
-  function createChannelItem(channel) {
-    const type = normalizeType(channel);
-    const uri = channel.uri;
+  function render() {
+    var groups = { tv: [], radio: [], hdmi: [], fn: [], app: [], rec: [] };
+    var counts = { all: 0, tv: 0, radio: 0, hdmi: 0, fn: 0, app: 0, rec: 0 };
+    S.channels.forEach(function (ch) {
+      var t = typeOf(ch);
+      counts[t]++; counts.all++;
+      if (visible(ch)) groups[t].push(ch);
+    });
+    ['all', 'tv', 'radio', 'hdmi', 'app'].forEach(function (k) { var e = $('n-' + k); if (e) e.textContent = counts[k] + (k === 'hdmi' ? counts.fn : 0) + (k === 'tv' ? counts.rec : 0); });
 
-    const row = document.createElement('div');
-    row.className = 'channel-item' + (state.selectedChannels.has(uri) ? ' selected' : '');
-
-    const left = document.createElement('div');
-    left.className = 'channel-left';
-
-    const name = document.createElement('div');
-    name.className = 'channel-name';
-    name.textContent = channel.name || uri;
-
-    left.appendChild(name);
-
-    const badge = document.createElement('div');
-    badge.className = 'badge ' + type;
-    badge.textContent = type.toUpperCase();
-
-    row.appendChild(left);
-    row.appendChild(badge);
-
-    row.addEventListener('click', () => toggleChannel(uri));
-    return row;
-  }
-
-  function toggleChannel(uri) {
-    if (state.selectedChannels.has(uri)) state.selectedChannels.delete(uri);
-    else {
-      if (state.selectedChannels.size >= state.maxChannels) {
-        toast('warn', 'Limit reached', `Maximum ${state.maxChannels} channels allowed`);
+    // Inputs and apps first: they are few and usually the most wanted.
+    var order = ['hdmi', 'fn', 'app', 'rec', 'tv', 'radio'];
+    var html = '';
+    order.forEach(function (t) {
+      var arr = groups[t];
+      if (!arr.length) return;
+      if (t === 'rec' && separate('rec')) {
+        html += '<div class="group-h">' + icon(TYPES[t].ic) + TYPES[t].label + ' <span class="cnt">' + arr.length + '</span><span class="line"></span></div>' +
+          '<div class="sep-note">' + icon('home') + '<div><b>All ' + arr.length + ' recordings are in the “' + esc(tvName()) + ' Recordings” tile</b>' +
+          '<span>Added and removed automatically, newest first, while the USB drive is connected. Manage them on the <a href="/recordings">Recordings</a> page.</span></div></div>';
         return;
       }
-      state.selectedChannels.add(uri);
+      var nSel = arr.filter(function (c) { return S.sel.has(c.uri); }).length;
+      html += '<div class="group-h">' + icon(TYPES[t].ic) + TYPES[t].label + ' <span class="cnt">' + nSel + ' / ' + arr.length + ' selected</span><span class="line"></span>' +
+        '<button class="btn btn-ghost gact" data-gsel="' + t + '">Select all</button><button class="btn btn-ghost gact" data-gclr="' + t + '">None</button></div>' +
+        (separate(t) ? '<div class="sep-note">' + icon('home') + '<div><b>Shown in the separate “' + esc(tvName()) + ' ' + TILE[t] + '” tile</b><span>' +
+          (t === 'fn' ? 'One button per function. ' : 'Pick one in that tile to launch it on the TV. ') + 'They do not count towards the TV limit. If none is ticked, all of them appear.</span></div></div>' : '') +
+        (t === 'rec' ? '<p class="note" style="margin:-4px 0 10px">Available only while the USB drive is connected to the TV. Each selected recording becomes an input in the Home app that plays it.</p>' : '') +
+        '<div class="tiles">' + arr.map(tileHtml).join('') + '</div>';
+    });
+    if (!html) html = '<div class="empty"><div class="big">' + icon('search') + '</div><h3>Nothing matches</h3><p>Change the search or the filter.</p></div>';
+    $('list').innerHTML = html;
+    updateStats();
+  }
+
+  function diffCount() {
+    var n = 0;
+    S.sel.forEach(function (u) { if (!S.saved.has(u)) n++; });
+    S.saved.forEach(function (_, u) { if (!S.sel.has(u)) n++; });
+    return n;
+  }
+
+  function updateStats() {
+    var n = mainCount(), d = diffCount();
+    $('c-sel').textContent = n;
+    $('c-max').textContent = S.max; $('max-inline').textContent = S.max;
+    var nSaved = 0; S.saved.forEach(function (_, u) { var c = chOf(u); if (!(c && separate(typeOf(c)))) nSaved++; });
+    $('c-saved').textContent = nSaved;
+    $('c-total').textContent = S.channels.length;
+    $('c-chg').textContent = d;
+    $('c-chg-s').textContent = d ? 'not saved yet' : 'everything saved';
+    $('c-chg-card').className = 'card' + (d ? ' warn' : ' good');
+    var left = S.max - n;
+    $('c-sel-s').innerHTML = 'of <span id="c-max">' + S.max + '</span> allowed' + (left <= 5 ? ' · <b style="color:var(--warn)">' + Math.max(0, left) + ' left</b>' : '');
+    B.setMeter(n, S.max);
+    var lbl = document.querySelector('#h-meter .l'); if (lbl) lbl.textContent = 'Selected for HomeKit';
+    $('savebar').classList.toggle('show', d > 0);
+    $('sb-msg').innerHTML = d + (d === 1 ? ' unsaved change' : ' unsaved changes') + '<span class="sbx"> · ' + n + ' selected</span>';
+    syncButtons();
+  }
+
+  function syncButtons() {
+    var d = diffCount();
+    ['save-btn', 'save-btn-top'].forEach(function (id) { $(id).disabled = S.busy || d === 0; });
+    $('rescan-btn').disabled = S.busy;
+    $('discard-btn').disabled = S.busy || d === 0;
+  }
+
+  // ── Actions ─────────────────────────────────────────────────────────────
+  function toggle(uri) {
+    if (S.sel.has(uri)) S.sel.delete(uri);
+    else {
+      var c0 = chOf(uri);
+      if (!(c0 && separate(typeOf(c0))) && mainCount() >= S.max) { B.toast('warn', 'HomeKit limit reached', 'A TV can show at most ' + S.max + ' inputs. Remove something first.'); return; }
+      S.sel.add(uri);
     }
-    renderChannels();
-    updateSaveButtonsVisibility();
+    render();
   }
 
-  function updateStats(filteredCount) {
-    if (el.selectedCount) el.selectedCount.textContent = String(state.selectedChannels.size);
-    if (el.maxCount) el.maxCount.textContent = String(state.maxChannels);
-    if (el.totalCount) el.totalCount.textContent = String(state.channels.length);
-  }
-
-  // Quick selects
-  function selectAll() {
-    state.channels.forEach(ch => {
-      if (state.selectedChannels.size < state.maxChannels) state.selectedChannels.add(ch.uri);
+  function addMany(list) {
+    var skipped = 0;
+    list.forEach(function (c) {
+      if (S.sel.has(c.uri)) return;
+      if (!separate(typeOf(c)) && mainCount() >= S.max) { skipped++; return; }
+      S.sel.add(c.uri);
     });
-    renderChannels();
-    updateSaveButtonsVisibility();
-  }
-  function selectNone() {
-    state.selectedChannels.clear();
-    renderChannels();
-    updateSaveButtonsVisibility();
-  }
-  function selectHD() {
-    state.selectedChannels.clear();
-    state.channels
-      .filter(ch => (ch.name || '').toUpperCase().includes('HD'))
-      .slice(0, state.maxChannels)
-      .forEach(ch => state.selectedChannels.add(ch.uri));
-    renderChannels();
-    updateSaveButtonsVisibility();
-  }
-  function selectTop20() {
-    state.selectedChannels.clear();
-    state.channels.slice(0, Math.min(20, state.maxChannels)).forEach(ch => state.selectedChannels.add(ch.uri));
-    renderChannels();
-    updateSaveButtonsVisibility();
+    if (skipped) B.toast('warn', 'HomeKit limit reached', skipped + ' item(s) not added: the limit is ' + S.max + '.');
+    render();
   }
 
-  function attachEventListeners() {
-    el.tvSelect?.addEventListener('change', async () => {
-      state.selectedTV = el.tvSelect.value || null;
-      state.channels = [];
-      state.selectedChannels.clear();
-      updateStats(0);
-
-      showSection(el.controls, false);
-      showSection(el.statsBar, false);
-      showSection(el.channelListContainer, false);
-      showSection(el.saveSection, false);
-      showSection(el.saveBtnTop, false);
-
-      await updatePairingButtonVisibility();
-
-      if (state.selectedTV) {
-        showSection(el.emptyState, true);
-        toast('info', 'TV selected', `Selected ${state.selectedTV}. Click "Scan TV Channels".`, 2200);
-      } else {
-        showSection(el.emptyState, true);
-      }
+  function save() {
+    if (S.busy) return;
+    var chosen = S.channels.filter(function (c) { return S.sel.has(c.uri); });
+    if (!chosen.length) { B.toast('warn', 'Nothing selected', 'Select at least one item.'); return; }
+    if (mainCount() > S.max) { B.toast('error', 'Too many', mainCount() + ' / ' + S.max); return; }
+    // Keep the HomeKit identifier of items that were already saved, so the
+    // Home app keeps their names/order and automations keep pointing to them.
+    var payload = chosen.map(function (c) {
+      var o = { name: c.name, uri: c.uri, sourceType: c.sourceType, channelNumber: c.channelNumber, type: typeOf(c) };
+      var prev = S.saved.get(c.uri);
+      if (prev && prev.identifier != null) o.identifier = prev.identifier;
+      return o;
     });
-
-    el.scanBtn?.addEventListener('click', () => scanTV(false));
-    el.rescanBtn?.addEventListener('click', () => scanTV(true));
-
-    el.saveBtn?.addEventListener('click', saveSelection);
-    el.saveBtnTop?.addEventListener('click', saveSelection);
-
-    el.searchInput?.addEventListener('input', renderChannels);
-    el.typeFilter?.addEventListener('change', renderChannels);
-
-    el.selectAllBtn?.addEventListener('click', selectAll);
-    el.selectNoneBtn?.addEventListener('click', selectNone);
-    el.selectHDBtn?.addEventListener('click', selectHD);
-    el.selectTop20Btn?.addEventListener('click', selectTop20);
-
-    el.pairingBtn?.addEventListener('click', () => {
-      if (!state.selectedTV) return;
-      window.location.href = `/pair?tv=${encodeURIComponent(state.selectedTV)}`;
-    });
+    S.busy = true; syncButtons();
+    $('save-btn').innerHTML = '<span class="spin"></span>Saving…';
+    B.fetchJson('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tv: S.tv, channels: payload }) })
+      .then(function (d) {
+        if (!d.success) throw new Error(d.error || d.message || 'save failed');
+        S.saved = new Map(payload.map(function (c) { return [c.uri, c]; }));
+        B.toast('success', 'Saved', payload.length + ' inputs applied to HomeKit.');
+        if (B.status) B.status.homekitInputs = payload.length;
+      })
+      .catch(function (e) { B.toast('error', 'Save failed', e.message); })
+      .then(function () {
+        S.busy = false;
+        $('save-btn').innerHTML = icon('save') + 'Save<span class="sbx">&nbsp;selection</span>';
+        render();
+      });
   }
 
-  function init() {
-    log('Loaded', VERSION);
-    // Make it impossible to confuse cached/old assets in browser: log version and disable cache for fetch.
-    loadTVs();
-    attachEventListeners();
-    updatePairingButtonVisibility();
-  }
+  // ── Wiring ──────────────────────────────────────────────────────────────
+  $('list').addEventListener('click', function (e) {
+    var g = e.target.closest('[data-gsel],[data-gclr]');
+    if (g) {
+      var t = g.getAttribute('data-gsel') || g.getAttribute('data-gclr');
+      var arr = S.channels.filter(function (c) { return typeOf(c) === t && visible(c); });
+      if (g.hasAttribute('data-gsel')) addMany(arr);
+      else { arr.forEach(function (c) { S.sel.delete(c.uri); }); render(); }
+      return;
+    }
+    var tile = e.target.closest('.tile');
+    if (tile) toggle(tile.getAttribute('data-uri'));
+  });
+  $('list').addEventListener('keydown', function (e) {
+    if ((e.key === ' ' || e.key === 'Enter') && e.target.classList.contains('tile')) {
+      e.preventDefault(); var u = e.target.getAttribute('data-uri'); toggle(u);
+      var again = document.querySelector('.tile[data-uri="' + CSS.escape(u) + '"]'); if (again) again.focus();
+    }
+  });
+  $('type-seg').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-t]'); if (!b) return;
+    S.type = b.getAttribute('data-t');
+    this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); });
+    render();
+  });
+  var qT = null;
+  $('search-input').addEventListener('input', function () {
+    var v = this.value; clearTimeout(qT);
+    qT = setTimeout(function () { S.q = v.trim().toLowerCase(); render(); }, 120);
+  });
+  $('only-sel').addEventListener('click', function () {
+    S.onlySel = !S.onlySel;
+    this.setAttribute('aria-pressed', S.onlySel);
+    this.classList.toggle('btn-primary', S.onlySel);
+    render();
+  });
+  $('select-hd').addEventListener('click', function () {
+    addMany(S.channels.filter(function (c) { return typeOf(c) === 'tv' && /\b(HD|4K|UHD)\b/i.test(c.name || ''); }));
+  });
+  $('select-visible').addEventListener('click', function () { addMany(S.channels.filter(visible)); });
+  $('select-none').addEventListener('click', function () {
+    if (S.sel.size && !confirm('Clear the whole selection? (nothing changes in HomeKit until you save)')) return;
+    S.sel.clear(); render();
+  });
+  $('discard-btn').addEventListener('click', function () { S.sel = new Set(S.saved.keys()); render(); B.toast('info', 'Changes discarded', 'Back to the saved selection.'); });
+  $('save-btn').addEventListener('click', save);
+  $('save-btn-top').addEventListener('click', save);
+  $('rescan-btn').addEventListener('click', function () {
+    if (diffCount() && !confirm('You have unsaved changes. Rescan anyway? They will be lost.')) return;
+    loadAll(true);
+  });
+  window.addEventListener('beforeunload', function (e) { if (diffCount()) { e.preventDefault(); e.returnValue = ''; } });
 
-  init();
+  // ── Init ────────────────────────────────────────────────────────────────
+  B.header({ active: 'channels', title: 'Channels & inputs', sub: 'Choose which TV channels, HDMI inputs and apps appear in the Home app.', meter: true })
+    .then(function (s) {
+      B.footer();
+      return B.fetchJson('/api/tvs').then(function (d) {
+        var tvs = (d && d.tvs) || [];
+        var want = B.qs('tv');
+        var tv = tvs.find(function (t) { return t.name === want; }) || tvs[0];
+        if (!tv) throw new Error('No TV configured');
+        S.tv = tv.name;
+        $('go-pair').href = '/pair?tv=' + encodeURIComponent(S.tv);
+        if (s && s.authMode !== 'psk' && !s.paired) {
+          $('need-pair').classList.remove('hidden');
+          $('summary').classList.add('hidden');
+          $('list-panel').classList.add('hidden');
+          return;
+        }
+        return loadAll(false);
+      });
+    })
+    .catch(function (e) { B.toast('error', 'Error', e.message); });
 })();

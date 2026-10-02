@@ -54,7 +54,8 @@
             "title": "PIN entry / Channel Selector server port",
             "placeholder": "8999",
             "type": "number",
-            "required": false
+            "required": false,
+            "description": "Port of this TV's web UI (PIN entry and Channel Selector). With more than one TV, give each TV a different port."
           },
           "channelSelectorPort": {
             "title": "Channel Selector port override",
@@ -71,8 +72,8 @@
           },
           "maxInputSources": {
             "title": "Max Input Sources",
-            "description": "Maximum number of inputs to register in HomeKit. HomeKit hard limit is 98. Defaults to 98.",
-            "placeholder": "98",
+            "description": "Maximum number of inputs to register in HomeKit. HomeKit hard limit is 97. Defaults to 97.",
+            "placeholder": "97",
             "type": "number",
             "required": false
           },
@@ -93,6 +94,37 @@
             "description": "Expose a separate Lightbulb accessory in HomeKit to control TV volume (brightness) and mute (on/off). Defaults to false.",
             "type": "boolean",
             "required": false
+          },
+          "appsAccessory": {
+            "title": "Apps in a separate tile",
+            "description": "Show apps in their own '<name> Apps' TV tile in the Home app instead of the TV's input list (needs a one-time pairing with the Homebridge setup code). The ones ticked in the Channel Selector, or all if none. Defaults to false.",
+            "type": "boolean",
+            "required": false
+          },
+          "recordingsAccessory": {
+            "title": "Recordings in a separate tile (USB drive required)",
+            "description": "Show every recording on the TV's USB hard drive in its own '<name> Recordings' TV tile (newest first, updated automatically). Works only while a USB drive is connected to the TV and set up for recording. Defaults to false.",
+            "type": "boolean",
+            "required": false
+          },
+          "functionsAccessory": {
+            "title": "TV functions in a separate tile",
+            "description": "Show TV functions (Teletext, Guide, Subtitles, Record now…) as buttons in their own '<name> Functions' accessory instead of the TV's input list. The ones ticked in the Channel Selector, or all if none. Defaults to false.",
+            "type": "boolean",
+            "required": false
+          },
+          "controlsAccessory": {
+            "title": "Controls Accessory",
+            "description": "Expose a separate '<name> Controls' accessory with one switch per picture mode (switching one off returns to Auto) and a 'Screen off' switch (picture off, sound on). Defaults to false.",
+            "type": "boolean",
+            "required": false
+          },
+          "controlsScenes": {
+            "title": "Picture modes for the Controls accessory",
+            "description": "Picture modes exposed as switches. Default: cinema, game, sports. Your TV's modes are listed in the plugin web page (Pairing & device → Diagnostics).",
+            "type": "array",
+            "required": false,
+            "items": { "type": "string" }
           },
           "volumeUI": {
             "title": "Volume On-Screen Display",
@@ -145,7 +177,7 @@
           },
           "sources": {
             "title": "Source",
-            "description": "Defaults to: [extInput:hdmi, extInput:component, extInput:scart, extInput:cec, extInput:widi]. Adding entries to the list below will only show those inputs.",
+            "description": "Leave empty to let the plugin read the input list from the TV. If set, ONLY these Sony source URIs are scanned, e.g. extInput:hdmi, extInput:composite, extInput:scart, extInput:cec, extInput:widi. Do not enter input names such as HDMI 3: use the Channel Selector to pick single inputs.",
             "type": "array",
             "required": false,
             "items": {
@@ -177,6 +209,11 @@
         "tvs[].externalaccessory",
         "tvs[].volumeAccessory",
         "tvs[].volumeUI",
+        "tvs[].appsAccessory",
+        "tvs[].recordingsAccessory",
+        "tvs[].functionsAccessory",
+        "tvs[].controlsAccessory",
+        "tvs[].controlsScenes",
         "tvs[].debug",
         {
           "key": "tvs[].applications",

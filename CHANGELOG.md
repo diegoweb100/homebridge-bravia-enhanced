@@ -2,7 +2,58 @@
 
 This is the change log for the plugin, all relevant changes will be listed here.
 
-For documentation please see the [README](https://github.com/diegoweb100/homebridge-bravia-enhanced/blob/master/README.md)
+For documentation please see the [README](https://github.com/diegoweb100/homebridge-bravia-enhanced/blob/main/README.md)
+
+---
+
+## [1.4.21] - 2026-09-28
+
+### Fixed
+
+- **TV off at Homebridge start: channels never refreshed and a new TV was never published.** With cookie pairing, the only registration attempt happened at boot; if the TV was off or unreachable it failed and nothing retried it, so after the TV was switched on the plugin only polled power status (verified on a KD-55X9005B: TV on for 3 hours, no scan). The plugin now re-checks the registration as soon as the TV comes on (and, as a safety net, whenever the TV is on but not authenticated), then scans normally.
+- **Expired pairing cookie while Homebridge is running.** Requests refused with HTTP 401/403 now trigger a new registration (throttled, never while a PIN is pending), so a fresh cookie is obtained without a restart. Previously every private call kept failing until Homebridge was restarted.
+- **Scans stopped forever after an empty or failed reconcile.** The "scan in progress" flag could stay latched (e.g. after a scan returning 0 channels, or an exception while applying it to HomeKit), blocking every later scan. It is now always released.
+- **Request timeouts reported twice.** On the 8 s safety timeout the error callback fired twice (timeout + the "socket hang up" error emitted by the aborted request). During a scan this advanced the source queue twice and applied a partial channel list to HomeKit (inputs removed and re-added seconds later); on power-on it could send two WOL bursts. Each request now reports exactly once.
+- **HomeKit input limit was 98, the real maximum is 97.** HAP allows 100 services per accessory and the AccessoryInformation service counts too (100 − AccessoryInformation − Television − Speaker = 97). With 98 inputs the Speaker service of a new TV was silently dropped (no volume control) and on an existing TV the scan broke. Default and hard cap are now 97; a refused input no longer leaves the plugin state inconsistent.
+- **Autoscan-only configurations (no `tvs` in config.json) broke at restart.** The cached accessory was not restored, a new one with the same UUID was created and skipped by Homebridge as a duplicate, leaving a TV tile that did not respond. Managed TVs are now restored like configured ones.
+- **Stale inputs removed only every other one** (array spliced while iterating). Stale inputs are now removed before new ones are added, so swapping the selection at the cap works.
+- **A/V input not found (issue #8).** Sony TVs call the analog A/V input `extInput:composite`, not `extInput:component` (the TV answers "source is invalid"). The composite type is now recognised (HomeKit type Composite Video).
+- **Wrong entries in `sources` hid every HDMI input (issue #6).** Entries such as `"HDMI 3"` or a device name replaced the whole source list with values the TV cannot resolve. They are now ignored with a clear warning pointing to the Channel Selector.
+- **New TV channels collided with existing HomeKit identifiers.** After a restart the TV-channel counter restarted at 1001 while restored channels already used 1001, 1002…; a channel added from the Channel Selector got the same identifier as an existing one (e.g. Rai 1), so selecting it in the Home app could switch to the wrong channel. Identifiers already in use — or removed while Homebridge is running — are never handed out again, and the Channel Selector now saves the identifiers HomeKit really uses so they stay the same after a restart.
+- **"Rescan TV" did not rescan.** The web UI button only reloaded the cached list; it now asks the TV for a fresh list and waits for it.
+- **Channel numbers in the web UI were DVB service ids** (e.g. 1101 for Rai 1). The number shown on the remote (`dispNum`) is now read during the scan and displayed.
+- **Multiple receiveSources loops.** Each pairing / re-check started another endless refresh loop; there is now exactly one.
+
+### Changed
+
+- **`sources` not set: the input list is read from the TV** (`getSourceList`) instead of a fixed default. When `sources` is set it is used exactly as written — existing configurations (e.g. `["extInput:hdmi"]`) behave as before.
+- **Power-on answers HomeKit immediately** instead of after REST + WOL burst (which could exceed HomeKit's ~10 s budget and show "No Response"). Status polling reports the real state.
+- **`wolMode: "auto"` sends each magic packet both to the TV's IP and to the derived subnet broadcast.** Unicast alone is dropped when the host (or router) no longer has an ARP entry for the sleeping TV.
+- **`wakeWaitMaxMs` default 15 s → 45 s.** Older Bravia need ~25 s after WOL; the old value logged "TV did not become alive" on successful wakes.
+- **HomeKit ID logged** for the TV (external mode) and the volume accessory, to find the right pairing when Home says "Accessory already in another home" (issue #7; see README → Troubleshooting).
+- **Clear warning when the web UI port is already in use** (several TVs on the default `serverPort`).
+
+### Web UI redesign
+
+- New look for all web pages (Channels & inputs, Pairing & device, Discover TVs), same design language as the homebridge-viessmann-vicare report: hero header with live TV status (on/standby, paired, IP), tab navigation, light/dark theme following the system, responsive layout for phones, no external assets.
+- **Channels & inputs**: no more "select a TV" step (each TV has its own page), tiles grouped by Inputs / Apps / TV channels with type filter, search, "show selected only", per-group select/none, live HDMI connection status, HomeKit capacity meter, unsaved-changes bar with Save / Discard, warning before leaving with unsaved changes.
+- **Pairing & device**: guided 3-step PIN flow with 4-digit entry (paste supported), device summary, detected API versions, separate "Reset pairing" zone.
+- **Discover TVs**: radar animation while scanning, cards for found and managed TVs, new add/edit dialog.
+- **Radio stations listed separately.** The TV marks each broadcast service as TV or radio (`programMediaType`); the plugin now keeps it and the Channel Selector shows a **Radio** group and filter (before, radio stations were mixed with TV channels as "Digital TV").
+- **4K badge** next to HD for channels named 4K/UHD (the TV API does not report the resolution of a channel, so HD/4K are derived from the channel name). "HD & 4K channels" quick selection.
+- **Teletext as a selectable input** ("TV functions" group). Selecting it in the Home app presses the Teletext key on the TV (IRCC code read from the TV's `getRemoteControllerInfo`, with a built-in fallback) and the HomeKit selection goes back to what is playing. Rename it in the Home app as you like (e.g. "Televideo").
+- New endpoint `GET /api/status` (TV, power, pairing, HomeKit input count; no secrets).
+- **More TV functions** in the "TV functions" group: TV Guide, Subtitles, Audio track, TV / Radio, Home menu, Channel + / Channel −. Only keys the TV really has are offered (read from `getRemoteControllerInfo`, cached so the list is right even when the TV is off at start).
+- **"TV Settings" in iOS** (TV tile / Control Center remote) now opens the TV's options menu (it did nothing before).
+- **Recordings — requires a USB hard drive connected to the TV.** When the TV reports a recording drive (`usb:recStorage`) the scan lists the recordings and the Channel Selector shows a "Recordings on the USB drive" group (each selected one becomes a Home input that plays it), plus a **Record now** function. New **Recordings** page and tab: play on the TV, protect/unprotect, delete (confirmation; protected recordings are refused), scheduled timers and failed recordings as reported by the TV. Without the drive nothing of this is shown and the page explains why. API: `GET /api/recordings`, `POST /api/recordings/play|protect|delete` (only `usb:recStorage` URIs accepted).
+- **Diagnostics** on the Pairing & device page, read live from the TV: Wake-on-LAN enabled, network (Ethernet/Wi-Fi, IP, MAC, gateway), power saving, picture mode and the modes available, USB recording drive, TV clock vs Homebridge, now playing, remote keys. API: `GET /api/diagnostics` (read-only).
+- **Separate Home tiles for apps, recordings and TV functions** (`appsAccessory`, `recordingsAccessory`, `functionsAccessory`, all off by default), so the TV's input list keeps only inputs, channels and radio. "<name> Apps" and "<name> Recordings" are TV tiles (pick to launch / play, on/off follows the TV, iOS remote works there too); recordings are listed automatically, newest first, with the date added when a programme was recorded more than once (USB drive required). "<name> Functions" has one momentary button per function. They do not count towards the 97-input limit; the Channel Selector says where each group goes.
+- **Optional Controls accessory** (`controlsAccessory: true`, off by default): "<name> Controls" with one switch per picture mode (`controlsScenes`, default cinema / game / sports; mutually exclusive, off returns to Auto) and a **Screen off** switch (picture off, sound on). Switch states follow changes made with the remote (checked every 30 s while the TV is on).
+
+### Security
+
+- Removed the legacy `compatibilitymode` branch inherited from the original plugin, which sent every request — including the pairing cookie and PSK header — to `closure-compiler.appspot.com` instead of the TV. The option is now ignored with a notice.
+- `/api/managed-tvs` no longer returns stored PSKs in clear; the discover UI keeps the stored PSK unless a new one is typed.
 
 ---
 
