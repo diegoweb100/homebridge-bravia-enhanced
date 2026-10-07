@@ -868,7 +868,7 @@ class SonyTV {
     // CRITICAL: Ensure accessory is always published to HomeKit
     // Even if TV is powered off, we need the accessory visible so user can turn it on
     if (!this.accessory.context.isRegisteredInHomeKit && this.channelServices.length > 0) {
-      this.log('[' + this.name + '] ⚠️  Accessory not registered but has channels - registering now');
+      if (this.debug) this.log('[' + this.name + '] ⚠️  Accessory not registered but has channels - registering now');
       this.syncAccessory();
     }
 
@@ -2256,8 +2256,20 @@ class SonyTV {
       return false;
     };
     
+    var retriedWithCookie = false;
     var onSucces = function (chunk) {
       self._lastRegistrationUnreachable = false;
+      // v1.4.22: refused without cookie but we hold one → try ONCE with it
+      // (some firmware may want the cookie). retriedWithCookie is local to
+      // this registration attempt, so this can never loop.
+      if (chunk.indexOf('[]') < 0 && !retriedWithCookie && self.cookie && isNull(self.pwd)) {
+        retriedWithCookie = true;
+        self._actRegisterWithCookie = true;
+        self.makeHttpRequest(function (e) { self._actRegisterWithCookie = false; onError(e); },
+          function (c2) { self._actRegisterWithCookie = false; onSucces(c2); },
+          '/sony/accessControl/', post_data, false);
+        return;
+      }
       if (self.debug) self.log('[' + self.name + '] Auth response received');
       if (self.debug) self.log('[' + self.name + '] 🔑 PAIRING TRACE: TV response body=' + chunk);
       // Try to parse and log structured info
@@ -2425,7 +2437,7 @@ class SonyTV {
       const data = JSON.stringify(storeObject);
       const channelsPath = STORAGE_PATH + '/sonytv-channels-' + this.name + '.json';
       fs.writeFileSync(channelsPath, data);
-      this.log('[' + this.name + '] ✓ Saved ' + storeObject.length + ' channels in external storage: ' + channelsPath);
+      if (this.debug) this.log('[' + this.name + '] ✓ Saved ' + storeObject.length + ' channels in external storage: ' + channelsPath);
       if (this.debug)
         this.log('[' + this.name + '] Channels saved to file');
     } catch (e) {
@@ -2470,6 +2482,10 @@ class SonyTV {
           // Convert saved channel objects into internal scannedChannels tuples.
           // tuple format: [name, uri, sourceType, identifier]
           this.scannedChannels = sel.channels.map(ch => [ch.name, ch.uri, ch.sourceType, ch.identifier]);
+          // v1.4.23: apps / functions / recordings shown in their own tiles are
+          // not added to the TV at start (they used to be added, then removed
+          // by the first scan: a HomeKit change at every restart).
+          this.scannedChannels = this._mainTvChannels(this.scannedChannels);
           // Rebuild services from selection
           this.channelServices = [];
           // IMPORTANT: keep Maps as real Map instances (HomeKit expects identifiers lookup)
@@ -2609,8 +2625,17 @@ class SonyTV {
     if (skippedCount > 0) {
       this.log('[' + this.name + '] ⚠️  Skipped ' + skippedCount + ' channels (HomeKit limit)');
     }
-    this.log('[' + this.name + '] ✓ Added ' + addedCount + ' new channels');
-    this.log('[' + this.name + '] Total channels now: ' + this.channelServices.length + ' / ' + MAX_CHANNELS);
+    // v1.4.22: periodic scans are quiet. One summary line when something
+    // changed (or on the first scan after start); full detail with debug:true.
+    if (this.debug) {
+      this.log('[' + this.name + '] ✓ Added ' + addedCount + ' new channels');
+      this.log('[' + this.name + '] Total channels now: ' + this.channelServices.length + ' / ' + MAX_CHANNELS);
+    } else if (addedCount > 0 || removedCount > 0 || !this._firstScanLogged) {
+      this.log('[' + this.name + '] 📺 HomeKit inputs: ' + this.channelServices.length + ' / ' + MAX_CHANNELS +
+        (addedCount || removedCount ? ' (+' + addedCount + ' / −' + removedCount + ')' : '') +
+        (this._lastFullScanCount ? ' · ' + this._lastFullScanCount + ' items on the TV' : ''));
+    }
+    this._firstScanLogged = true;
 
     if (!this.accessory.context.isRegisteredInHomeKit) {
       if (this.debug) this.log('[' + this.name + '] Registering accessory in HomeKit');
@@ -2715,6 +2740,7 @@ class SonyTV {
     }
 
     if (fullScannedChannels.length > 0) {
+      this._lastFullScanCount = fullScannedChannels.length;
       this.saveFullScanCache(fullScannedChannels);
     } else if (this.debug) {
       this.log('[' + this.name + '] Full scan returned 0 channels; keeping any previous full-scan cache');
@@ -2734,7 +2760,7 @@ class SonyTV {
       }
 
       channelsForHomeKit = selectedChannels;
-      this.log('[' + this.name + '] Applied channel selection for HomeKit: ' + channelsForHomeKit.length + ' channels (full scan: ' + fullScannedChannels.length + ')');
+      if (this.debug) this.log('[' + this.name + '] Applied channel selection for HomeKit: ' + channelsForHomeKit.length + ' channels (full scan: ' + fullScannedChannels.length + ')');
     } else if (fullScannedChannels.length > this.maxInputSources) {
       this.log('[' + this.name + '] Full scan found ' + fullScannedChannels.length + ' channels; HomeKit will publish at most ' + this.maxInputSources + ' input sources');
     }
@@ -2876,7 +2902,7 @@ class SonyTV {
 
     if (!this.receivingSources && checkPower) {
       this._scanPrepared = false;
-      this.log('[' + this.name + '] Starting channel scan...');
+      if (this.debug) this.log('[' + this.name + '] Starting channel scan...');
       const that = this;
       this.inputSourceList = [];
       this.sources.forEach(function (sourceName) {
@@ -3009,7 +3035,7 @@ class SonyTV {
             that.receiveSource(sourceName, sourceType, startIndex + 50);
             return; // Don't call receiveNextSources yet
           } else {
-            that.log('[' + that.name + '] Loaded all channels for ' + sourceName + ', total channels: ' + (startIndex + foundChannels));
+            if (that.debug) that.log('[' + that.name + '] Loaded all channels for ' + sourceName + ', total channels: ' + (startIndex + foundChannels));
           }
         } else {
           // v1.4.22: "source is invalid" (error 3) means the TV has no such
@@ -3106,7 +3132,7 @@ class SonyTV {
         if (data.indexOf('"error"') < 0) {
           var jayons = JSON.parse(data);
           var reslt = jayons.result[0];
-          that.log('[' + that.name + '] Found ' + reslt.length + ' apps on TV');
+          if (that.debug) that.log('[' + that.name + '] Found ' + reslt.length + ' apps on TV');
           var addedCount = 0;
           
           reslt.sort((a, b) => (a.title || '').localeCompare(b.title || '')).forEach(function (source) {
@@ -3120,7 +3146,7 @@ class SonyTV {
             }
           });
           
-          that.log('[' + that.name + '] ✓ Added ' + addedCount + ' apps');
+          if (that.debug) that.log('[' + that.name + '] ✓ Added ' + addedCount + ' apps');
         } else {
           that._scanIncomplete = true;
           if (that.debug) that.log('[' + that.name + '] ERROR (apps): Can\'t load applications');
@@ -3249,7 +3275,7 @@ class SonyTV {
           });
 
           // If connection state changed, log it
-          if (wasConnected !== isConnected) {
+          if (wasConnected !== isConnected && (wasConnected !== null || that.debug)) {
             that.log('[' + that.name + '] Input ' + (input.label || input.title || uri) + ': ' + (isConnected ? '🟢 connected' : '⚫ disconnected'));
             changed = true;
           }
@@ -3989,7 +4015,9 @@ class SonyTV {
       // KD-55X9005B: with an expired cookie in the request the TV answers 401
       // (and the plugin waited for a PIN), while the same call without cookie
       // returns a fresh cookie at once for a client it already knows, no PIN.
-      if (requestMethodName === 'actRegister' && post_options.headers) delete post_options.headers.Cookie;
+      // If that is refused while we hold a cookie, the caller retries once WITH
+      // it (this._actRegisterWithCookie) before deciding a PIN is needed.
+      if (requestMethodName === 'actRegister' && post_options.headers && !that._actRegisterWithCookie) delete post_options.headers.Cookie;
       // v1.4.16: log outgoing headers with secrets masked. The missing
       // Content-Type was the root cause of issue #2 (channel scan on Bravia XR)
       // and would have been impossible to spot without this. We always log the
@@ -4201,7 +4229,9 @@ class SonyTV {
             obtainedAt: now,
             expiresAt: exp || (now + COOKIE_DEFAULT_LIFETIME_MS),
             estimated: !exp,
-            renewBlocked: false
+            renewBlocked: false,
+            lastRenewAttempt: now,
+            lastRenewOk: now
           });
           that.cookieMeta = meta;
           that._saveCookieMeta();
@@ -4289,7 +4319,21 @@ class SonyTV {
         if (j && Array.isArray(j.result)) {
           return done(self.cookie && self.cookie !== before ? 'renewed' : 'accepted');
         }
-        if (j && j.error && (j.error[0] === 401 || j.error[0] === 403)) return done('pin-required');
+        if (j && j.error && (j.error[0] === 401 || j.error[0] === 403)) {
+          if (!self._actRegisterWithCookie && before) {
+            self._actRegisterWithCookie = true;
+            return self.makeHttpRequest(
+              (err) => { self._actRegisterWithCookie = false; done('unreachable', String(err)); },
+              (d2) => {
+                self._actRegisterWithCookie = false;
+                let j2 = null; try { j2 = JSON.parse(d2); } catch (e) {}
+                if (j2 && Array.isArray(j2.result)) return done(self.cookie && self.cookie !== before ? 'renewed' : 'accepted');
+                done('pin-required');
+              },
+              '/sony/accessControl/', post, false);
+          }
+          return done('pin-required');
+        }
         done('error', data ? String(data).slice(0, 120) : '');
       },
       '/sony/accessControl/', post, false
@@ -4305,7 +4349,7 @@ class SonyTV {
       this.authok = false;
       const left = this.cookieDaysLeft();
       this.log.warn('[' + this.name + '] ⚠️  The TV refused the pairing cookie (' + where + ')' +
-        (left !== null ? (left > 0 ? ', ' + Math.floor(left) + ' day(s) were left' : ', it expired ' + Math.ceil(-left) + ' day(s) ago') : '') +
+        (left !== null && left <= 0 ? ', it expired ' + Math.ceil(-left) + ' day(s) ago' : '') +
         '. Checking the registration…');
     }
     this._requestReRegistration(where);

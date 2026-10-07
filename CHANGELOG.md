@@ -6,6 +6,20 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.23] - 2026-10-07
+
+### Changed
+
+- **Much quieter log.** A channel refresh used to write 9 lines every 30 seconds even when nothing changed. Routine lines (scan started, channels loaded per source, apps found, selection applied, file saved) now appear only with `debug: true`. Without debug the plugin writes one summary line — `📺 HomeKit inputs: 33 / 45 (+1 / −0) · 342 items on the TV` — only at start and when inputs are added or removed. HDMI connection lines are logged when a connection changes, not at every start. Pairing, power, web UI and warning lines are unchanged.
+
+### Fixed
+
+- Pairing: if a TV refuses the registration without the cookie, the plugin retries once with it before asking for a PIN (safety net for firmware that wants the cookie).
+- No duplicate "Pairing cookie renewed" at start.
+- With the separate tiles enabled, apps / functions / recordings were added to the TV at every restart and removed by the first scan (a HomeKit change each time). They are now left out from the start.
+
+---
+
 ## [1.4.22] - 2026-10-07
 
 ### Fixed
