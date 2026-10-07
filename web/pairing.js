@@ -42,6 +42,7 @@
   });
 
   function refreshStatus() {
+    if (B.status) renderCookie(B.status.cookie);
     if (!tv) { $('pin-card').classList.add('hidden'); return Promise.resolve(); }
     return B.fetchJson('/api/pairing-status?tv=' + encodeURIComponent(tv)).then(function (d) {
       if (!d.success) throw new Error(d.message || 'status failed');
@@ -114,8 +115,18 @@
     B.fetchJson('/api/request-pin?tv=' + encodeURIComponent(tv), { method: 'POST' })
       .then(function (d) {
         if (!d.success) throw new Error(d.message || 'Could not request PIN');
-        B.toast('success', 'Look at the TV', d.message || 'A PIN is now shown on the TV screen.');
-        step(3); otp[0].focus();
+        // v1.4.22: a TV that still knows Homebridge re-pairs at once without
+        // showing a PIN: check before asking the user to type one.
+        return new Promise(function (r) { setTimeout(r, 2500); })
+          .then(function () { return B.fetchJson('/api/pairing-status?tv=' + encodeURIComponent(tv)); })
+          .then(function (st) {
+            if (st && st.paired) {
+              B.toast('success', 'Paired — no PIN needed', 'The TV still knows Homebridge and renewed the pairing on its own.');
+              return B.header(hdrOpts).then(refreshStatus);
+            }
+            B.toast('success', 'Look at the TV', d.message || 'A PIN is now shown on the TV screen.');
+            step(3); otp[0].focus();
+          });
       })
       .catch(function (e) { B.toast('error', 'Error', e.message); })
       .then(function () { btn.disabled = false; });
@@ -133,6 +144,35 @@
       .catch(function (e) { B.toast('error', 'Error', e.message); })
       .then(function () { btn.disabled = false; });
   }
+
+  // Pairing cookie validity (v1.4.22) ---------------------------------------------
+  var RENEW = { renewed: 'renewed', accepted: 'accepted by the TV', 'pin-required': 'the TV asks for a new PIN', unreachable: 'TV not reachable', error: 'refused' };
+  function fmtDate(ms) { return ms ? new Date(ms).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–'; }
+  function renderCookie(ck) {
+    if (!ck || ck.mode !== 'cookie' || !ck.present) { $('ck-box').classList.add('hidden'); return; }
+    $('ck-box').classList.remove('hidden');
+    var d = typeof ck.daysLeft === 'number' ? ck.daysLeft : null;
+    var cls = d === null ? '' : (d < 0 || ck.refused ? 'bad' : (d <= 5 ? 'warn' : 'good'));
+    $('ck-card').className = 'card ' + cls;
+    $('ck-days').textContent = ck.refused ? 'Refused' : (d === null ? '?' : (d < 0 ? 'Expired' : Math.floor(d) + (Math.floor(d) === 1 ? ' day' : ' days')));
+    $('ck-until').textContent = (ck.expiresAt ? (d < 0 ? 'expired ' : 'until ') + fmtDate(ck.expiresAt) : '') + (ck.estimated ? ' (estimated)' : '');
+    $('ck-auto').textContent = ck.autoRenew ? 'On' : 'Paused — pair again';
+    $('ck-renew-card').className = 'card ' + (ck.autoRenew ? 'good' : 'warn');
+    $('ck-last').textContent = ck.lastRenewAttempt ? 'last: ' + fmtDate(ck.lastRenewAttempt) + ' · ' + (RENEW[ck.lastRenewResult] || ck.lastRenewResult || '') : 'not needed yet';
+    B.setMeter && (function () {
+      var bar = $('ck-bar'); var pct = d === null ? 0 : Math.max(0, Math.min(100, d / 14 * 100));
+      bar.firstChild.style.width = pct + '%'; bar.className = 'bar' + (d !== null && d <= 2 ? ' full' : (d !== null && d <= 5 ? ' warn' : ''));
+    })();
+  }
+  $('ck-renew-btn').addEventListener('click', function () {
+    var btn = this; btn.disabled = true;
+    B.fetchJson('/api/renew-cookie', { method: 'POST' }).then(function (r) {
+      if (r.cookie) renderCookie(r.cookie);
+      if (r.success) B.toast('success', 'Pairing renewed', r.result === 'renewed' ? 'New cookie from the TV.' : 'The TV accepted the pairing.');
+      else B.toast('error', 'Not renewed', r.message || 'Error');
+      return B.header(hdrOpts);
+    }).catch(function (e) { B.toast('error', 'Error', e.message); }).then(function () { btn.disabled = false; });
+  });
 
   // Diagnostics ---------------------------------------------------------------
   var SAVING = { off: 'Off', low: 'Low', high: 'High', pictureOff: 'Screen off' };
@@ -194,6 +234,7 @@
     $('to-channels').href = '/?tv=' + encodeURIComponent(tv || '');
     if (!tv) { B.toast('error', 'Missing TV', 'Open this page from the plugin log link.'); return; }
     B.footer();
+    renderCookie(s && s.cookie);
     return Promise.all([refreshStatus(), loadDeviceInfo(), loadDiagnostics()]);
   });
 })();

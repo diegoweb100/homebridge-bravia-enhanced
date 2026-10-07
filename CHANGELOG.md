@@ -6,6 +6,21 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.22] - 2026-10-07
+
+### Fixed
+
+- **Pairing expired after ~14 days and the TV stopped working in HomeKit.** Sony pairing cookies last 14 days. When it expired the TV refused every request, the plugin went into "waiting for PIN" but kept scanning every 30 s (thousands of `ERROR processing channels` lines). Root cause: the registration request carried the old, expired cookie and the TV answered 401 ("PIN required"); the same request **without** the cookie gets a fresh one at once, no PIN (verified on a KD-55X9005B). `actRegister` is now always sent without the stored cookie, and the plugin **renews the cookie automatically before it expires**: once a day while the TV is on, every hour in the last 3 days. If the TV refuses a cookie anyway, the plugin re-registers silently in the same second. If the TV refuses anyway, the plugin logs it once, stops scanning, and asks for a new PIN in the web page; automatic renewal pauses so the TV does not show a PIN popup every day.
+- **Empty or failed scans emptied the separate tiles** ("<name> Apps", "<name> Recordings", "<name> Functions"). A scan that returns nothing — or where the TV did not answer for a source (standby, display off, refused, timeout) — now never removes inputs or tile entries; they are removed only when a complete scan confirms they are gone.
+- "USB recording drive not connected" was logged (and recordings hidden) when the TV simply refused the request.
+- Saving a selection without the input type (older clients) re-created every input.
+
+### Added
+
+- **Pairing validity in the web UI**: header chip "Paired · N days left" (amber in the last 5 days, red when expired or refused), and on the Pairing & device page the expiry date, a 14-day bar, last automatic renewal and a **Renew now** button. The expiry is read from the TV's cookie (`Max-Age`); for cookies saved by older versions it is estimated from the file date. API: `cookie` in `GET /api/status`, `POST /api/renew-cookie`.
+
+---
+
 ## [1.4.21] - 2026-09-28
 
 ### Fixed

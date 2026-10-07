@@ -321,6 +321,7 @@ The TV speaker is also exposed as a HomeKit accessory (not shown in the Home app
 
 ## Troubleshooting
 
+- **Pairing (cookie mode) lasts 14 days**: since v1.4.22 the plugin renews it automatically while the TV is on and shows the days left in the web page (Pairing & device). If the TV ever asks for a new PIN, the page says so: switch the TV on and pair again there.
 - **TV was off when Homebridge started**: since v1.4.21 the plugin completes the pairing check and refreshes channels automatically as soon as the TV is switched on. No restart needed.
 - **An HDMI input is missing**: do not put input names (e.g. `"HDMI 3"` or `"Nintendo Switch 2"`) in `sources` — that field takes Sony source URIs and, when set, replaces the whole list. Remove `sources` (or set it to `["extInput:hdmi"]`) and pick single inputs in the Channel Selector.
 - **Volume accessory: "Accessory already in another home"**: the volume accessory's HomeKit ID is derived from the TV name and is written in the log at startup (`Volume accessory published: <name> Volume (HomeKit ID XX:XX:...)`). After renaming or re-adding a TV, Homebridge may still hold the old pairing for that ID. In Homebridge UI go to Settings → *Unpair Bridges / Cameras / TVs / External Accessories*, remove the entry with that ID, restart Homebridge and add the accessory again.

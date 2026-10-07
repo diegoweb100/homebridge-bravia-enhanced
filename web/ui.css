@@ -278,3 +278,4 @@ footer.foot a{color:inherit}
 @media (max-width:720px){nav.tabs .in{padding:8px 10px;gap:2px}nav.tabs a{padding:8px 11px;font-size:13.5px;gap:6px}}
 .sep-note{display:flex;gap:12px;align-items:flex-start;padding:10px 14px;border-radius:12px;margin:-2px 0 12px;background:var(--accs);border:1px solid rgba(79,70,229,.25);font-size:13.5px}
 .sep-note>.ic{color:var(--acc);margin-top:2px}.sep-note b{display:block}.sep-note span{color:var(--mute)}
+#ck-bar{background:var(--line)}

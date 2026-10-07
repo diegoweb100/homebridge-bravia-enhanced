@@ -14,6 +14,8 @@ const TV_IDENTIFIER_BASE = 1000;
 // HAP limit is 100 services per accessory: AccessoryInformation + Television +
 // TelevisionSpeaker leave room for 97 InputSource services.
 const MAX_HOMEKIT_INPUTS = 97;
+// Sony pairing cookies last 14 days (Set-Cookie Max-Age=1209600).
+const COOKIE_DEFAULT_LIFETIME_MS = 14 * 86400000;
 
 // Fallback list of external input sources, used only when "sources" is not set
 // in config AND the TV does not answer getSourceList. Sources the TV does not
@@ -648,6 +650,10 @@ class SonyTV {
     this.useApps = (isNull(config.applications)) ? false : (config.applications instanceof Array == true ? config.applications.length > 0 : config.applications);
     this.applications = (isNull(config.applications) || (config.applications instanceof Array != true)) ? [] : config.applications;
     this.cookiepath = STORAGE_PATH + '/sonycookie_' + this.name;
+    // v1.4.22: when the pairing cookie was issued, when it expires and how the
+    // last automatic renewal went (shown in the web UI as "days left").
+    this.cookieMetaPath = STORAGE_PATH + '/sonycookie_' + this.name + '.meta.json';
+    this.cookieMeta = null;
     
     // Web server configuration
     this.channelSelectorPort = config.channelSelectorPort || this.serverPort;
@@ -1733,12 +1739,33 @@ class SonyTV {
     });
   }
 
+  // v1.4.22: pairing cookie validity for the web UI (no secret values).
+  cookieStatus() {
+    if (!isNull(this.psk)) return { mode: 'psk' };
+    const m = this.cookieMeta || {};
+    const left = this.cookieDaysLeft();
+    return {
+      mode: 'cookie',
+      present: !!this.cookie,
+      daysLeft: left === null ? null : Math.round(left * 10) / 10,
+      expiresAt: m.expiresAt || null,
+      obtainedAt: m.obtainedAt || null,
+      estimated: m.estimated === true,
+      lastRenewAttempt: m.lastRenewAttempt || null,
+      lastRenewOk: m.lastRenewOk || null,
+      lastRenewResult: m.lastRenewResult || null,
+      autoRenew: !m.renewBlocked,
+      refused: this.authok !== true && !!this.cookie,
+      awaitingPin: this.awaitingPin === true
+    };
+  }
+
   // v1.4.21: compact status for the web UI header (no secrets).
   getUiStatus() {
     var cookieExists = false;
     try { cookieExists = fs.existsSync(this.cookiepath); } catch (e) {}
     var hasCookieInMemory = (!!this.cookie && String(this.cookie).length > 0);
-    var paired = (this.authok === true) || ((cookieExists || hasCookieInMemory) && this.awaitingPin !== true);
+    var paired = (this.awaitingPin !== true) && ((this.authok === true) || cookieExists || hasCookieInMemory);
     var iface = this.capabilities.interface || {};
     var sys = this.capabilities.system || {};
     if (!SonyTV._pkgVersion) {
@@ -1763,6 +1790,7 @@ class SonyTV {
       awaitingPin: this.awaitingPin === true,
       homekitInputs: this.channelServices ? this.channelServices.length : 0,
       tiles: { apps: this.appsAccessory, recordings: this.recordingsAccessory, functions: this.functionsAccessory },
+      cookie: this.cookieStatus(),
       maxInputSources: this.maxInputSources,
       channelSelector: this.enableChannelSelector,
       externalAccessory: this.accessory && this.accessory.context ? this.accessory.context.isexternal === true : false,
@@ -1941,12 +1969,21 @@ class SonyTV {
     try {
       full = Array.isArray(full) ? full : [];
       picked = Array.isArray(picked) ? picked : [];
+      // v1.4.22: an empty scan (TV refused the requests, timed out…) must
+      // never empty the tiles. Keep what they show until a real answer.
+      if (full.length === 0) {
+        if (this.debug) this.log('[' + this.name + '] Empty scan: separate tiles left unchanged');
+        return;
+      }
       const of = (arr, k) => arr.filter((c) => this._kindOf(c) === k);
+      const hasReal = (kind) => this._sides && this._sides[kind] && Array.from(this._sides[kind].inputs.keys()).some((u) => u.indexOf('placeholder:') !== 0);
       if (this.appsAccessory) {
         const sel = of(picked, 'app');
-        this._updateSideTv('apps', sel.length ? sel : of(full, 'app'));
+        const list = sel.length ? sel : of(full, 'app');
+        // The app list comes from a separate request: if it failed, keep the tile.
+        if (list.length || !hasReal('apps')) this._updateSideTv('apps', list);
       }
-      if (this.recordingsAccessory) {
+      if (this.recordingsAccessory && (of(full, 'rec').length > 0 || this._hasRecStorage === false || !hasReal('recs'))) {
         const meta = this._recMeta || {};
         const recs = of(full, 'rec').slice().sort((a, b) => String((meta[b[1]] || {}).startDateTime || '').localeCompare(String((meta[a[1]] || {}).startDateTime || '')));
         // Several recordings of the same programme: add the date to tell them apart.
@@ -1960,7 +1997,8 @@ class SonyTV {
       }
       if (this.functionsAccessory) {
         const sel = of(picked, 'fn');
-        this._updateFunctions(sel.length ? sel : of(full, 'fn'));
+        const list = sel.length ? sel : of(full, 'fn');
+        if (list.length || !(this._fnSide && this._fnSide.sw.size)) this._updateFunctions(list);
       }
     } catch (e) {
       this.log.warn('[' + this.name + '] Could not update the separate Home tiles: ' + (e && e.stack ? e.stack : e));
@@ -2142,6 +2180,7 @@ class SonyTV {
       }
       if (that.authok === true || that.power !== true) that.syncControlsAccessory(false);
       that._syncSideState();
+      that._maybeRenewCookie(false);
       that.updateStatus();
     }, interval);
   }
@@ -2260,6 +2299,7 @@ class SonyTV {
         const _rDnBase = _rSuffix ? 'http://' + os.hostname() + _rSuffix + ':' + _rPort : null;
         self.log('Please enter the PIN that appears on your TV at ' + _rIpBase + '/pair?tv=' + encodeURIComponent(self.name));
         self.awaitingPin = true;
+        self.authok = false;
         // The permanent web server hosts the pairing page.
         self.log('[' + self.name + '] 🔑 Pairing: ' + _rIpBase + '/pair?tv=' + encodeURIComponent(self.name));
         if (_rDnBase) self.log('[' + self.name + '] 🔑 Also try: ' + _rDnBase + '/pair?tv=' + encodeURIComponent(self.name));
@@ -2275,6 +2315,7 @@ class SonyTV {
         self.log('[' + self.name + '] ✓ Paired successfully');
         self.authok = true;
         self.awaitingPin = false;
+        self.pwd = null; // v1.4.22: the PIN is single-use; never re-send it
         if (self.enableChannelSelector) {
           self.log('[' + self.name + '] ✅ Channel Selector: ' + _rIpBase + '/');
           if (_rDnBase) self.log('[' + self.name + '] ✅ Also try: ' + _rDnBase + '/');
@@ -2507,8 +2548,10 @@ class SonyTV {
     // room for the new entries; and iterate over a copy, because splicing the
     // array inside its own forEach skipped every other stale service.
     let removedCount = 0;
+    const keepAll = this._noRemoveOnSync === true;
+    this._noRemoveOnSync = false;
     this.channelServices.slice().forEach((service) => {
-      if (!self.haveChannel(service)) {
+      if (!keepAll && !self.haveChannel(service)) {
         self.tvService.removeLinkedService(service);
         self.accessory.removeService(service);
         const _rid = service.getCharacteristic(Characteristic.Identifier).value;
@@ -2702,6 +2745,11 @@ class SonyTV {
     channelsForHomeKit = this._mainTvChannels(channelsForHomeKit);
 
     this.scannedChannels = channelsForHomeKit;
+    // v1.4.22: a scan where the TV did not answer for some source (standby,
+    // display off, refused, timeout) only ADDS inputs; nothing is removed
+    // until a complete scan confirms it is really gone.
+    this._noRemoveOnSync = this._scanIncomplete === true;
+    if (this._noRemoveOnSync && this.debug) this.log('[' + this.name + '] Incomplete scan: existing inputs kept');
     try {
       this.syncAccessory();
     } catch (e) {
@@ -2779,6 +2827,12 @@ class SonyTV {
   // initialize a scan for new sources
   receiveSources(checkPower = null) {
     this._ensureScanLoop();
+    // v1.4.22: never scan without a working pairing (cookie mode): every call
+    // would be refused and, every 30 s, produce an empty channel list.
+    if (isNull(this.psk) && this.authok !== true) {
+      if (this.debug) this.log('[' + this.name + '] Scan skipped: not authenticated with the TV');
+      return;
+    }
     if (this.debug) this.log('[' + this.name + '] receiveSources checkPower=' + checkPower + ', this.power=' + this.power + ', this.receivingSources=' + this.receivingSources);
     if (checkPower === null)
       checkPower = this.power;
@@ -2839,6 +2893,7 @@ class SonyTV {
 
       this.receivingSources = true;
       this.scannedChannels = [];
+      this._scanIncomplete = false; // v1.4.22: set when the TV fails to answer for a source
       // v1.4.15: reset appsLoaded at the start of every scan cycle so apps are
       // re-fetched on every refresh, not just on the very first boot scan.
       // Without this reset, appsLoaded stayed latched to true after the first
@@ -2887,6 +2942,7 @@ class SonyTV {
     if (that.debug) that.log('[' + that.name + '] Fetching source: ' + sourceName + ' with startIndex=' + startIndex);
     
     var onError = function (err) {
+      that._scanIncomplete = true; // v1.4.22: TV did not answer for this source
       if (that.debug) that.log('[' + that.name + '] Error loading source: ' + sourceName + ' at index ' + startIndex);
       if (that.debug) that.log(err);
       that.receiveNextSources();
@@ -2956,11 +3012,16 @@ class SonyTV {
             that.log('[' + that.name + '] Loaded all channels for ' + sourceName + ', total channels: ' + (startIndex + foundChannels));
           }
         } else {
+          // v1.4.22: "source is invalid" (error 3) means the TV has no such
+          // input: a real answer. Anything else (illegal state, display off,
+          // refused) means we do not know: keep the inputs we already have.
+          if (!/"error"\s*:\s*\[\s*3\s*,/.test(data)) that._scanIncomplete = true;
           if (that.debug) that.log('[' + that.name + '] ERROR: Can\'t load sources for ' + sourceName + ' at index ' + startIndex);
           if (that.debug) that.log('[' + that.name + '] ERROR: TV response: ' + data);
         }
       } catch (e) {
-        that.log('[' + that.name + '] ERROR processing channels: ' + e);
+        that._scanIncomplete = true;
+        that.log('[' + that.name + '] ERROR processing channels for ' + sourceName + ': ' + e + ' — answer: ' + String(data).slice(0, 120));
       }
       that.receiveNextSources();
     };
@@ -3033,6 +3094,7 @@ class SonyTV {
     if (that.debug) that.log('[' + that.name + '] Configured applications filter: ' + JSON.stringify(that.applications));
     
     var onError = function (err) {
+      that._scanIncomplete = true;
       if (that.debug) that.log('[' + that.name + '] ERROR loading apps: ' + err);
       if (that.debug)
         that.log(err);
@@ -3060,6 +3122,7 @@ class SonyTV {
           
           that.log('[' + that.name + '] ✓ Added ' + addedCount + ' apps');
         } else {
+          that._scanIncomplete = true;
           if (that.debug) that.log('[' + that.name + '] ERROR (apps): Can\'t load applications');
           if (that.debug) {
             if (that.debug) that.log('TV response:');
@@ -3322,11 +3385,16 @@ class SonyTV {
     this.makeHttpRequest(
       () => cb(!!that._hasRecStorage),
       (data) => {
-        let present = false;
+        let present = !!that._hasRecStorage;
         try {
           const json = JSON.parse(data);
-          const list = json && Array.isArray(json.result) && Array.isArray(json.result[0]) ? json.result[0] : [];
-          present = list.some((x) => x && x.source === 'usb:recStorage');
+          if (json && Array.isArray(json.result)) {
+            const list = Array.isArray(json.result[0]) ? json.result[0] : [];
+            present = list.some((x) => x && x.source === 'usb:recStorage');
+          } else if (json && json.error && json.error[0] !== 401 && json.error[0] !== 403 && !json.auth_url) {
+            present = false; // e.g. "no source" when no drive is plugged in
+          }
+          // auth_url / 401 / 403: the TV refused the call, so we know nothing
         } catch (e) {}
         if (present !== !!that._hasRecStorage) {
           that.log('[' + that.name + '] ' + (present ? '💾 USB recording drive detected on the TV' : 'USB recording drive not connected'));
@@ -3917,6 +3985,11 @@ class SonyTV {
 
     try {
       var post_options = that.getPostOptions(url);
+      // v1.4.22: actRegister is sent WITHOUT the stored cookie. Verified on a
+      // KD-55X9005B: with an expired cookie in the request the TV answers 401
+      // (and the plugin waited for a PIN), while the same call without cookie
+      // returns a fresh cookie at once for a client it already knows, no PIN.
+      if (requestMethodName === 'actRegister' && post_options.headers) delete post_options.headers.Cookie;
       // v1.4.16: log outgoing headers with secrets masked. The missing
       // Content-Type was the root cause of issue #2 (channel scan on Bravia XR)
       // and would have been impossible to spot without this. We always log the
@@ -3992,7 +4065,7 @@ class SonyTV {
           // so a fresh cookie is obtained without restarting Homebridge. For a
           // client already registered on the TV this does not show a new PIN.
           if ((res.statusCode === 401 || res.statusCode === 403) && requestMethodName !== 'actRegister') {
-            that._requestReRegistration('HTTP ' + res.statusCode + ' on ' + (requestMethodName || url));
+            that._onAuthRejected('HTTP ' + res.statusCode + ' on ' + (requestMethodName || url));
           }
           if (errCode === 12 && requestMethodName && requestMethodVersion && that.methodEndpoints[requestMethodName]) {
             const newVersion = that._downgradeApiVersion(requestMethodName);
@@ -4113,11 +4186,129 @@ class SonyTV {
     if (setcookie != null && setcookie != undefined) {
       setcookie.forEach(function (cookiestr) {
         try {
-          that.cookie = cookiestr.toString().split(';')[0];
+          const str = cookiestr.toString();
+          const prev = that.cookie;
+          that.cookie = str.split(';')[0];
           that.saveCookie(that.cookie);
+          // v1.4.22: remember when it expires (Max-Age or Expires; Sony uses
+          // 14 days) so the plugin can renew it in time and show "days left".
+          const now = Date.now();
+          let exp = null;
+          const ma = /;\s*max-age=(\d+)/i.exec(str);
+          if (ma) exp = now + parseInt(ma[1], 10) * 1000;
+          if (!exp) { const ex = /;\s*expires=([^;]+)/i.exec(str); if (ex) { const t = Date.parse(ex[1]); if (!isNaN(t)) exp = t; } }
+          const meta = Object.assign({}, that.cookieMeta || {}, {
+            obtainedAt: now,
+            expiresAt: exp || (now + COOKIE_DEFAULT_LIFETIME_MS),
+            estimated: !exp,
+            renewBlocked: false
+          });
+          that.cookieMeta = meta;
+          that._saveCookieMeta();
+          if (prev && prev !== that.cookie) {
+            that.log('[' + that.name + '] 🔑 Pairing cookie renewed — valid until ' + new Date(meta.expiresAt).toLocaleString());
+          }
         } catch (e) {}
       });
     }
+  }
+
+  _saveCookieMeta() {
+    try { fs.writeFileSync(this.cookieMetaPath, JSON.stringify(this.cookieMeta || {})); } catch (e) {}
+  }
+
+  _loadCookieMeta() {
+    try { this.cookieMeta = JSON.parse(fs.readFileSync(this.cookieMetaPath, 'utf8')); } catch (e) { this.cookieMeta = null; }
+    if (!this.cookieMeta || !this.cookieMeta.expiresAt) {
+      // Cookie saved by an older version: estimate from the file date.
+      try {
+        const st = fs.statSync(this.cookiepath);
+        this.cookieMeta = { obtainedAt: st.mtimeMs, expiresAt: st.mtimeMs + COOKIE_DEFAULT_LIFETIME_MS, estimated: true };
+      } catch (e) { this.cookieMeta = null; }
+    }
+  }
+
+  // Days left before the pairing cookie expires (null when unknown / PSK).
+  cookieDaysLeft() {
+    if (!isNull(this.psk) || !this.cookieMeta || !this.cookieMeta.expiresAt) return null;
+    return (this.cookieMeta.expiresAt - Date.now()) / 86400000;
+  }
+
+  // v1.4.22: renew the pairing cookie BEFORE it expires. For a client the TV
+  // already knows, actRegister with the still-valid cookie returns a fresh
+  // one (no PIN). Called from the status loop; runs at most once a day while
+  // the TV is on, and every hour in the last 3 days. If the TV answers that a
+  // PIN would be needed, automatic renewal stops (so the TV does not show a
+  // PIN popup every day) and the web UI asks the user to pair again.
+  _maybeRenewCookie(force) {
+    if (!isNull(this.psk) || !this.cookie || this.awaitingPin === true || this.authok !== true) return;
+    if (this._renewInFlight) return;
+    const meta = this.cookieMeta || {};
+    if (!force) {
+      if (this.power !== true) return;
+      if (meta.renewBlocked) return;
+      const left = this.cookieDaysLeft();
+      const since = Date.now() - (meta.lastRenewAttempt || 0);
+      const gap = (left !== null && left < 3) ? 3600000 : 20 * 3600000;
+      if (since < gap) return;
+    }
+    this._renewCookie(() => {});
+  }
+
+  _renewCookie(cb) {
+    const self = this;
+    this._renewInFlight = true;
+    const before = this.cookie;
+    this.cookieMeta = Object.assign({}, this.cookieMeta || {}, { lastRenewAttempt: Date.now() });
+    this._saveCookieMeta();
+    const meta = {};
+    const clientId = 'HomeBridge-Bravia' + ':' + this.accessory.context.uuid;
+    const post = JSON.stringify({ id: 8, method: 'actRegister', version: this.getApiVersion('actRegister', '1.0'),
+      params: [{ clientid: clientId, nickname: 'homebridge', level: 'private' }, [{ value: 'yes', function: 'WOL' }]] });
+    const done = (result, note) => {
+      self._renewInFlight = false;
+      meta.lastRenewResult = result;
+      if (result === 'renewed' || result === 'accepted') meta.lastRenewOk = Date.now();
+      if (result === 'pin-required') meta.renewBlocked = true;
+      self.cookieMeta = Object.assign({}, self.cookieMeta || {}, meta);
+      self._saveCookieMeta();
+      if (result === 'pin-required') {
+        const left = self.cookieDaysLeft();
+        self.log.warn('[' + self.name + '] ⚠️  The TV did not renew the pairing automatically (it asks for a PIN). ' +
+          (left !== null && left > 0 ? 'Current pairing still valid ' + Math.floor(left) + ' day(s). ' : '') +
+          'Pair again from the web page: Pairing & device.');
+      } else if (self.debug) {
+        self.log('[' + self.name + '] Cookie renewal: ' + result + (note ? ' (' + note + ')' : ''));
+      }
+      cb(result);
+    };
+    this.makeHttpRequest(
+      (err) => done('unreachable', String(err)),
+      (data) => {
+        let j = null; try { j = JSON.parse(data); } catch (e) {}
+        if (j && Array.isArray(j.result)) {
+          return done(self.cookie && self.cookie !== before ? 'renewed' : 'accepted');
+        }
+        if (j && j.error && (j.error[0] === 401 || j.error[0] === 403)) return done('pin-required');
+        done('error', data ? String(data).slice(0, 120) : '');
+      },
+      '/sony/accessControl/', post, false
+    );
+  }
+
+  // v1.4.22: the TV refused a private call (cookie expired or revoked). Stop
+  // scanning, say it ONCE, and let the registration check decide whether the
+  // TV renews silently or needs a new PIN.
+  _onAuthRejected(where) {
+    if (!isNull(this.psk)) return;
+    if (this.authok === true) {
+      this.authok = false;
+      const left = this.cookieDaysLeft();
+      this.log.warn('[' + this.name + '] ⚠️  The TV refused the pairing cookie (' + where + ')' +
+        (left !== null ? (left > 0 ? ', ' + Math.floor(left) + ' day(s) were left' : ', it expired ' + Math.ceil(-left) + ' day(s) ago') : '') +
+        '. Checking the registration…');
+    }
+    this._requestReRegistration(where);
   }
   // Helper function to save authentication cookie to disk
   saveCookie(cookie) {
@@ -4150,7 +4341,7 @@ class SonyTV {
       if (that.debug)
         that.log('[' + that.name + '] Cookie loaded from ' + that.cookiepath);
       that.cookie = data.toString();
-    
+      that._loadCookieMeta();
       that.awaitingPin = false;
 });
   }
@@ -4205,6 +4396,16 @@ class SonyTV {
         self.serveFile(res, path.join(__dirname, 'web', 'recordings.js'), 'application/javascript');
         return;
       }
+      if (pathname === '/api/renew-cookie' && req.method === 'POST') {
+        if (!isNull(self.psk)) return self.sendJSON(res, { success: false, message: 'PSK authentication: no cookie to renew' });
+        if (!self.cookie || self.awaitingPin === true) return self.sendJSON(res, { success: false, message: 'Not paired: pair with a PIN first' });
+        self._renewCookie((result) => {
+          const ok = result === 'renewed' || result === 'accepted';
+          self.sendJSON(res, { success: ok, result: result, cookie: self.cookieStatus(),
+            message: ok ? null : (result === 'unreachable' ? 'The TV is not reachable (off?)' : result === 'pin-required' ? 'The TV asks for a new PIN: pair again' : 'The TV did not accept the request') });
+        });
+        return;
+      }
       if (pathname === '/api/diagnostics' && req.method === 'GET') {
         self.apiDiagnostics(req, res);
         return;
@@ -4236,7 +4437,7 @@ class SonyTV {
         const hasCookieInMemory = (!!self.cookie && String(self.cookie).length > 0);
 // Consider the TV paired only if we are authenticated OR we have a cookie and we are NOT currently awaiting a PIN.
 // If the user removed pairing on the TV, checkRegistration() will set awaitingPin=true and clear the cookie.
-const paired = (self.authok === true) || ((cookieExists || hasCookieInMemory) && self.awaitingPin !== true);
+const paired = (self.awaitingPin !== true) && ((self.authok === true) || cookieExists || hasCookieInMemory);
 const pinRequired = !paired;
         res.writeHead(200, {'Content-Type': 'application/json'});
         res.end(JSON.stringify({ success: true, paired, pinRequired }));
@@ -4401,7 +4602,7 @@ const pinRequired = !paired;
         // - Otherwise: show the Channel Selector if enabled, or a small info page explaining the flag is off.
         const cookieExists = (() => { try { return fs.existsSync(self.cookiepath); } catch (e) { return false; } })();
         const hasCookieInMemory = (!!self.cookie && String(self.cookie).length > 0);
-        const paired = (self.authok === true) || ((cookieExists || hasCookieInMemory) && self.awaitingPin !== true);
+        const paired = (self.awaitingPin !== true) && ((self.authok === true) || cookieExists || hasCookieInMemory);
         if (!paired) {
           res.writeHead(302, { 'Location': '/pair?tv=' + encodeURIComponent(self.name) });
           res.end();
@@ -4602,7 +4803,9 @@ const pinRequired = !paired;
           if (self.receivingSources && Date.now() - started < 30000) { setTimeout(apply, 300); return; }
           const full = self.scannedChannels;
           try {
-            const picked = data.channels.map(ch => [ch.name, ch.uri, ch.sourceType, (ch.identifier != null ? ch.identifier : null)]);
+            // v1.4.22: take the input type from the scan when the client did not send it.
+            const typeOf = new Map((Array.isArray(full) ? full : []).map((c) => [c[1], c[2]]));
+            const picked = data.channels.map(ch => [ch.name, ch.uri, (ch.sourceType != null ? ch.sourceType : typeOf.get(ch.uri)), (ch.identifier != null ? ch.identifier : null)]);
             self._refreshSideAccessories(Array.isArray(full) && full.length ? full : self._readFullScanCache(), picked);
             self.scannedChannels = self._mainTvChannels(picked);
             self.syncAccessory();

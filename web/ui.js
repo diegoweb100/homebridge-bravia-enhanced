@@ -136,7 +136,17 @@
       var chips = [];
       chips.push('<span class="chip ' + (s.power ? 'on' : 'off') + '"><span class="dot"></span>' + (s.power ? 'TV on' : 'TV off / standby') + '</span>');
       if (s.authMode === 'psk') chips.push('<span class="chip on">' + icon('shield') + 'PSK authentication</span>');
-      else chips.push('<span class="chip ' + (s.paired ? 'on' : 'bad') + '">' + icon('key') + (s.paired ? 'Paired' : 'Pairing required') + '</span>');
+      else {
+        var ck = s.cookie || {};
+        var txt = s.paired ? 'Paired' : 'Pairing required', cls = s.paired ? 'on' : 'bad';
+        if (s.paired && ck.refused) { txt = 'Pairing refused by the TV'; cls = 'bad'; }
+        else if (s.paired && typeof ck.daysLeft === 'number') {
+          var d = Math.floor(ck.daysLeft);
+          txt = d >= 0 ? 'Paired · ' + d + (d === 1 ? ' day left' : ' days left') : 'Pairing expired';
+          cls = d < 0 ? 'bad' : (d <= 5 ? 'off' : 'on');
+        }
+        chips.push('<span class="chip ' + cls + '">' + icon('key') + esc(txt) + '</span>');
+      }
       if (tv.ip) chips.push('<span class="chip">' + icon('lan') + esc(tv.ip) + '</span>');
       document.getElementById('h-chips').innerHTML = chips.join('');
       if (opts.meter) setMeter(s.homekitInputs, s.maxInputSources);

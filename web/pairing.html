@@ -22,6 +22,14 @@
         </div>
         <a class="btn btn-primary" id="to-channels" href="/"><i data-ic="list"></i>Choose channels</a>
       </div>
+      <div id="ck-box" class="hidden" style="margin-top:16px">
+        <div class="cards">
+          <div class="card" id="ck-card"><div class="ct"><i data-ic="key"></i>Pairing valid</div><div class="cv" id="ck-days">–</div><div class="cs" id="ck-until"></div></div>
+          <div class="card" id="ck-renew-card"><div class="ct"><i data-ic="refresh"></i>Automatic renewal</div><div class="cv sm" id="ck-auto">–</div><div class="cs" id="ck-last"></div></div>
+        </div>
+        <div class="bar" id="ck-bar" style="margin-top:12px"><i style="width:0"></i></div>
+        <p class="note" style="margin-top:10px">The TV issues a pairing cookie valid 14 days. The plugin renews it on its own while the TV is on (once a day), so you should never need a new PIN. <button class="btn btn-ghost" id="ck-renew-btn" style="margin-left:6px"><i data-ic="refresh"></i>Renew now</button></p>
+      </div>
     </section>
 
     <!-- PIN flow -->
