@@ -660,6 +660,10 @@ class SonyTV {
     this.enableChannelSelector = config.enableChannelSelector !== false;
     this.selectedChannelsPath = STORAGE_PATH + '/selected-channels-' + this.name + '.json';
     this.volumeAccessory = config.volumeAccessory === true;
+    // v1.4.24: how the volume accessory looks in Home (issue #9) and an
+    // optional Mute switch for Siri.
+    this.volumeAccessoryType = config.volumeAccessoryType === 'fan' ? 'fan' : 'lightbulb';
+    this.muteSwitch = config.muteSwitch === true;
     this.volumeUI = config.volumeUI === true;
     this.volumeAccessoryInstance = null; // will hold the Lightbulb accessory if enabled
     // v1.4.21: optional "<name> Controls" accessory: picture-mode switches and "Screen off".
@@ -1278,7 +1282,7 @@ class SonyTV {
       'soundoutput: ' + this.soundoutput,
       'tvsource: ' + (this.tvsource || '<none>'),
       'externalaccessory: ' + (this.externalaccessory === true),
-      'volumeAccessory: ' + this.volumeAccessory,
+      'volumeAccessory: ' + this.volumeAccessory + ' (' + this.volumeAccessoryType + ')' + ' | muteSwitch: ' + this.muteSwitch,
       'separate tiles: apps=' + this.appsAccessory + ' recordings=' + this.recordingsAccessory + ' functions=' + this.functionsAccessory,
       'controlsAccessory: ' + this.controlsAccessory + (this.controlsAccessory ? ' (' + this.controlsScenes.join(', ') + ')' : ''),
       'volumeUI: ' + this.volumeUI,
@@ -1799,45 +1803,78 @@ class SonyTV {
     };
   }
 
+  // Volume accessory: Lightbulb (default, as before) or Fan (v1.4.24,
+  // issue #9: "Hey Siri, turn off all the lights" also muted the TV because
+  // the lightbulb counts as a light). On = sound on, level = volume.
+  // Optional "Mute" switch (v1.4.24): On = TV muted — usable with Siri
+  // ("turn on <name> Mute") and not touched by "all the lights" commands.
+  // It lives in the volume accessory, or in its own "<name> Mute" accessory
+  // when the volume accessory is disabled.
   setupVolumeAccessory() {
     const that = this;
-    if (!that.volumeAccessory) return;
+    const accs = [];
+    let volAcc = null;
+    if (that.volumeAccessory) {
+      const volName = that.name + ' Volume';
+      const uuid = UUIDGen.generate(that.name + '-SonyTV-Volume');
+      const isFan = that.volumeAccessoryType === 'fan';
+      volAcc = new Accessory(volName, uuid, isFan ? that.platform.api.hap.Categories.FAN : that.platform.api.hap.Categories.LIGHTBULB);
+      const svc = isFan ? new Service.Fan(volName) : new Service.Lightbulb(volName);
+      const level = isFan ? Characteristic.RotationSpeed : Characteristic.Brightness;
+      svc.getCharacteristic(Characteristic.On)
+        .on('get', (callback) => { that.getMuted((err, muted) => callback(null, !!that.power && !muted)); })
+        .on('set', (value, callback) => { that.setMuted(!value, callback); });
+      svc.getCharacteristic(level)
+        .on('get', (callback) => { that.getVolume(callback); })
+        .on('set', (value, callback) => { that.setVolume(value, callback); });
+      volAcc.addService(svc);
+      that._volService = svc;
+      that._volLevelChar = level;
+      that.volumeAccessoryInstance = volAcc;
+      accs.push(volAcc);
+      that.log('[' + that.name + '] 🔊 Volume accessory published: ' + volName + ' as ' + (isFan ? 'fan' : 'lightbulb') + ' (HomeKit ID ' + homeKitIdFor(uuid) + ')');
+    }
+    if (that.muteSwitch) {
+      let host = volAcc;
+      if (!host) {
+        const muteName = that.name + ' Mute';
+        const uuidM = UUIDGen.generate(that.name + '-SonyTV-Mute');
+        host = new Accessory(muteName, uuidM, that.platform.api.hap.Categories.SWITCH);
+        accs.push(host);
+        that.log('[' + that.name + '] 🔇 Mute accessory published: ' + muteName + ' (HomeKit ID ' + homeKitIdFor(uuidM) + ')');
+      }
+      const label = that.name + ' Mute';
+      const sw = new Service.Switch(label, 'mute');
+      if (Characteristic.ConfiguredName) { try { sw.setCharacteristic(Characteristic.ConfiguredName, label); } catch (e) {} }
+      sw.getCharacteristic(Characteristic.On)
+        .on('get', (callback) => { that.getMuted((err, muted) => callback(null, !!that.power && !!muted)); })
+        .on('set', (value, callback) => { that.setMuted(!!value, callback); });
+      host.addService(sw);
+      that._muteSwitch = sw;
+    }
+    if (accs.length) that.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', accs);
+  }
 
-    const volName = that.name + ' Volume';
-    const uuid = UUIDGen.generate(that.name + '-SonyTV-Volume');
-    const acc = new Accessory(volName, uuid, that.platform.api.hap.Categories.LIGHTBULB);
-
-    const bulb = new Service.Lightbulb(volName);
-
-    // On/Off → mute/unmute
-    bulb.getCharacteristic(Characteristic.On)
-      .on('get', (callback) => {
-        that.getMuted((err, muted) => {
-          callback(null, !muted); // On=true means NOT muted
-        });
-      })
-      .on('set', (value, callback) => {
-        that.setMuted(!value, callback); // On=true means unmute
-      });
-
-    // Brightness 0-100 → volume 0-100
-    bulb.getCharacteristic(Characteristic.Brightness)
-      .on('get', (callback) => {
-        that.getVolume(callback);
-      })
-      .on('set', (value, callback) => {
-        that.setVolume(value, callback);
-      });
-
-    acc.addService(bulb);
-    that.volumeAccessoryInstance = acc;
-    that.platform.api.publishExternalAccessories('homebridge-bravia-enhanced', [acc]);
-    // v1.4.21: log the HomeKit ID (issue #7). The ID is derived from the TV
-    // name: after renaming or re-adding a TV, an old pairing kept by Homebridge
-    // for the same ID makes the Home app answer "Accessory already in another
-    // home". Knowing the ID lets the user remove exactly that pairing in
-    // Homebridge UI → Settings → "Unpair Bridges / Cameras / TVs / External Accessories".
-    that.log('[' + that.name + '] 🔊 Volume accessory published: ' + volName + ' (HomeKit ID ' + homeKitIdFor(uuid) + ')');
+  // Refresh volume / mute accessories from the TV (power changes and, while
+  // the TV is on, every 20 s so a mute done with the remote shows up too).
+  _syncVolumeAccessories(force) {
+    if (!this._volService && !this._muteSwitch) return;
+    if (!this.power) {
+      if (this._volService) this._volService.updateCharacteristic(Characteristic.On, false);
+      if (this._muteSwitch) this._muteSwitch.updateCharacteristic(Characteristic.On, false);
+      return;
+    }
+    const now = Date.now();
+    if (!force && this._lastVolSync && now - this._lastVolSync < 20000) return;
+    this._lastVolSync = now;
+    if (this._volService) {
+      this.getVolume((err, vol) => { if (!err && vol !== null && vol !== undefined) this._volService.updateCharacteristic(this._volLevelChar, vol); });
+    }
+    this.getMuted((err, muted) => {
+      if (err) return;
+      if (this._volService) this._volService.updateCharacteristic(Characteristic.On, !muted);
+      if (this._muteSwitch) this._muteSwitch.updateCharacteristic(Characteristic.On, !!muted);
+    });
   }
 
   // v1.4.21: optional external accessory "<name> Controls" with one switch per
@@ -2181,6 +2218,7 @@ class SonyTV {
       if (that.authok === true || that.power !== true) that.syncControlsAccessory(false);
       that._syncSideState();
       that._maybeRenewCookie(false);
+      if (that.authok === true || that.power !== true) that._syncVolumeAccessories(false);
       that.updateStatus();
     }, interval);
   }
@@ -2760,6 +2798,11 @@ class SonyTV {
       }
 
       channelsForHomeKit = selectedChannels;
+      this._applyChannelRenames();
+      // keep the HomeKit identifier the renamed channel already had
+      if (this._renameIds && this._renameIds.size) {
+        channelsForHomeKit = channelsForHomeKit.map((c) => this._renameIds.has(c[1]) ? [c[0], c[1], c[2], this._renameIds.get(c[1])] : c);
+      }
       if (this.debug) this.log('[' + this.name + '] Applied channel selection for HomeKit: ' + channelsForHomeKit.length + ' channels (full scan: ' + fullScannedChannels.length + ')');
     } else if (fullScannedChannels.length > this.maxInputSources) {
       this.log('[' + this.name + '] Full scan found ' + fullScannedChannels.length + ' channels; HomeKit will publish at most ' + this.maxInputSources + ' input sources');
@@ -3613,6 +3656,12 @@ class SonyTV {
       if (chunk.indexOf('"error"') >= 0) {
         if (that.debug)
           that.log('[' + that.name + '] ERROR response: ' + chunk);
+      } else {
+        // keep the other mute control (volume accessory / Mute switch) in step
+        setTimeout(() => {
+          if (that._volService) that._volService.updateCharacteristic(Characteristic.On, !muted);
+          if (that._muteSwitch) that._muteSwitch.updateCharacteristic(Characteristic.On, !!muted);
+        }, 300);
       }
       if (!isNull(callback))
         callback(null);
@@ -3933,23 +3982,8 @@ class SonyTV {
         }
       }
       this.tvService.getCharacteristic(Characteristic.Active).updateValue(this.power);
-      // Sync volume accessory on/off state with TV power
-      if (this.volumeAccessoryInstance) {
-        const bulb = this.volumeAccessoryInstance.getService(Service.Lightbulb);
-        if (bulb) {
-          if (!state) {
-            bulb.updateCharacteristic(Characteristic.On, false);
-          } else {
-            // TV turned on — refresh volume and mute state
-            this.getVolume((err, vol) => {
-              if (!err && vol !== null) bulb.updateCharacteristic(Characteristic.Brightness, vol);
-            });
-            this.getMuted((err, muted) => {
-              if (!err) bulb.updateCharacteristic(Characteristic.On, !muted);
-            });
-          }
-        }
-      }
+      // Sync volume / mute accessories with TV power
+      this._syncVolumeAccessories(true);
     }
   }
   // Make HTTP request to TV
@@ -5318,9 +5352,26 @@ const pinRequired = !paired;
     const norm = (s) => String(s || '').toLowerCase().trim();
     const byTitle = new Map(channels.map(ch => [norm(ch[0]), ch]));
 
+    // v1.4.24: broadcasters rename services (e.g. "Rai 1 HD" -> "Rai 1"); the
+    // name is part of the URI (srvName=...), so an exact match fails and the
+    // channel used to vanish from HomeKit. Match TV channels by their DVB
+    // triplet (trip=onid.tsid.sid), which does not change with the name.
+    const tripOf = (u) => { const m = /[?&]trip=([0-9.]+)/.exec(String(u || '')); return m ? m[1] : null; };
+    const byTrip = new Map();
+    channels.forEach((ch) => { const t = tripOf(ch[1]); if (t && !byTrip.has(t)) byTrip.set(t, ch); });
+    this._renamedChannels = this._renamedChannels || new Map();
+
     const filtered = [];
     selectedUris.forEach(uri => {
       let ch = byUri.get(uri);
+      if (!ch) {
+        const t = tripOf(uri);
+        const viaTrip = t ? byTrip.get(t) : null;
+        if (viaTrip) {
+          ch = viaTrip;
+          this._renamedChannels.set(uri, viaTrip);
+        }
+      }
       if (!ch && typeof uri === 'string' && uri.indexOf('appControl:') === 0) {
         const legacyTitle = uri.substring('appControl:'.length);
         ch = byTitle.get(norm(legacyTitle));
@@ -5332,6 +5383,35 @@ const pinRequired = !paired;
     });
 
     return filtered;
+  }
+
+  // v1.4.24: rewrite renamed channels in the saved selection (new URI and
+  // name, SAME identifier) so HomeKit keeps the same input and the
+  // automations/scenes that use it keep working.
+  _applyChannelRenames() {
+    this._renameIds = new Map();
+    if (!this._renamedChannels || this._renamedChannels.size === 0) return;
+    try {
+      const sel = JSON.parse(fs.readFileSync(this.selectedChannelsPath, 'utf8'));
+      let changed = false;
+      (sel.channels || []).forEach((c) => {
+        const to = this._renamedChannels.get(c.uri);
+        if (!to) return;
+        this.log('[' + this.name + '] 📺 Channel renamed by the broadcaster: "' + c.name + '" → "' + to[0] + '" (kept in HomeKit' + (c.identifier != null ? ', input ' + c.identifier : '') + ')');
+        c.uri = to[1];
+        c.name = to[0];
+        if (c.sourceType == null) c.sourceType = to[2];
+        if (c.identifier != null) this._renameIds.set(to[1], c.identifier);
+        changed = true;
+      });
+      if (changed) {
+        sel.savedAt = new Date().toISOString();
+        fs.writeFileSync(this.selectedChannelsPath, JSON.stringify(sel, null, 2));
+      }
+    } catch (e) {
+      if (this.debug) this.log('[' + this.name + '] Could not update renamed channels: ' + e);
+    }
+    this._renamedChannels.clear();
   }
 
   // Backward-compatible wrapper for older internal callers.

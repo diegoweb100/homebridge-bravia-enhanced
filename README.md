@@ -251,6 +251,8 @@ When `psk` is not set the plugin falls back to legacy cookie pairing (PIN entry 
 | `appsAccessory` | `false` | Show apps in a separate **"<name> Apps"** TV tile instead of the TV's input list: pick one to launch it. The apps ticked in the Channel Selector, or all if none. |
 | `recordingsAccessory` | `false` | **USB hard drive required.** Show every recording on the drive in a separate **"<name> Recordings"** TV tile, newest first, updated automatically: pick one to play it. |
 | `functionsAccessory` | `false` | Show TV functions (Teletext, Guide, Subtitles, Record now…) as buttons in a separate **"<name> Functions"** accessory instead of the TV's input list. The ones ticked in the Channel Selector, or all if none. |
+| `volumeAccessoryType` | `lightbulb` | `lightbulb` or `fan`. Use `fan` if "Hey Siri, turn off all the lights" should not mute the TV. |
+| `muteSwitch` | `false` | Adds a "<name> Mute" switch (on = muted) for Siri: "Hey Siri, turn on TV55 Mute". |
 | `controlsAccessory` | `false` | Publish a separate "<name> Controls" accessory: one switch per picture mode (mutually exclusive; switching one off goes back to Auto) and a "Screen off" switch (power saving "picture off": the screen goes dark, sound keeps playing — handy for radio). |
 | `controlsScenes` | `["cinema","game","sports"]` | Picture modes exposed as switches. The modes your TV supports are listed on the web page, Pairing & device → Diagnostics (e.g. `general`, `auto`, `photo`, `music`, `cinema`, `game`, `graphics`, `sports`, `animation`). |
 | `volumeUI` | `false` | Show the TV's native volume slider overlay on screen when changing volume via HomeKit. Requires `setAudioVolume` v1.2+ (auto-detected). When `false`, volume changes are silent (no on-screen feedback). |

@@ -126,6 +126,23 @@
             "required": false,
             "items": { "type": "string" }
           },
+          "volumeAccessoryType": {
+            "title": "Volume accessory type",
+            "description": "How the volume accessory appears in the Home app. Lightbulb: brightness = volume, on/off = sound on/off (note: \"Hey Siri, turn off all the lights\" also mutes the TV). Fan: speed = volume, on/off = sound on/off, not affected by light commands.",
+            "type": "string",
+            "default": "lightbulb",
+            "oneOf": [
+              { "title": "Lightbulb (default)", "enum": ["lightbulb"] },
+              { "title": "Fan (not affected by \"turn off all the lights\")", "enum": ["fan"] }
+            ],
+            "required": false
+          },
+          "muteSwitch": {
+            "title": "Mute switch",
+            "description": "Add a '<name> Mute' switch (on = TV muted) for Siri and automations, e.g. \"Hey Siri, turn on TV55 Mute\". It is added to the volume accessory, or published on its own if the volume accessory is off.",
+            "type": "boolean",
+            "required": false
+          },
           "volumeUI": {
             "title": "Volume On-Screen Display",
             "description": "Show the TV's native volume slider overlay on screen when changing volume via HomeKit. Requires setAudioVolume v1.2+. Defaults to false (silent volume changes).",
@@ -208,6 +225,8 @@
         "tvs[].maxInputSources",
         "tvs[].externalaccessory",
         "tvs[].volumeAccessory",
+        "tvs[].volumeAccessoryType",
+        "tvs[].muteSwitch",
         "tvs[].volumeUI",
         "tvs[].appsAccessory",
         "tvs[].recordingsAccessory",

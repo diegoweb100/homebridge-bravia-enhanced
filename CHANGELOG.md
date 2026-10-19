@@ -6,6 +6,19 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.24] - 2026-10-19
+
+### Added
+
+- **Volume accessory as a fan** (`volumeAccessoryType: "fan"`, issue #9). As a lightbulb, "Hey Siri, turn off all the lights" also muted the TV. As a fan, speed = volume and on/off = sound on/off, and light commands no longer touch it. Default stays `lightbulb`, so nothing changes for existing setups.
+- **Mute switch** (`muteSwitch: true`): a "<name> Mute" switch (on = TV muted) for Siri and automations — "Hey Siri, turn on TV55 Mute". It is added to the volume accessory, or published on its own if the volume accessory is off. Mute changed with the remote shows up within ~20 s; volume accessory and switch stay in step.
+
+### Fixed
+
+- **Channels renamed by the broadcaster disappeared from HomeKit.** In October 2026 Rai renamed its services ("Rai 1 HD" → "Rai 1", "Rai Movie HD" → "Rai Movie"…). The Sony URI contains the service name (`srvName=`), so the saved selection no longer matched and those channels were removed from the TV's input list (and from scenes/automations that used them). Selected channels are now also matched by their DVB triplet (`trip=`), which does not change with the name: a renamed channel stays in HomeKit with the **same input identifier**, its new name is written to the saved selection, and the log says `📺 Channel renamed by the broadcaster: "Rai 1 HD" → "Rai 1" (kept in HomeKit, input 1001)`. Channels already lost this way come back automatically with their old identifier.
+
+---
+
 ## [1.4.23] - 2026-10-07
 
 ### Changed
