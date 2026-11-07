@@ -26,6 +26,7 @@ Homebridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **HDMI input status polling**: auto-detects connected/disconnected HDMI inputs with automatic API version fallback (v1.1 to v1.0).
 - **Verbose structured logging**: easier troubleshooting with prefixed log lines (`[POWER]`, `[PAIRING]`, etc.).
 - **Volume accessory** (optional): a separate Lightbulb to control TV volume (brightness) and mute (on/off) directly from HomeKit.
+- **TV guide (EPG)** (v1.4.25+): programmes of your TV channels from free XMLTV guides, channel on the TV on top, double-click to switch channel, per-country guides, and spoken questions in Italian through Siri Shortcuts (no AI). See [TV guide (EPG)](#tv-guide-epg).
 - **Volume On-Screen Display toggle** (v1.4.12+): `volumeUI` controls whether HomeKit volume changes show the TV's native OSD slider. Off by default (silent changes).
 
 ### Compatibility and reliability
@@ -320,6 +321,48 @@ The plugin registers a TV remote in HomeKit. Use the basic function keys, and se
 The TV speaker is also exposed as a HomeKit accessory (not shown in the Home app, but visible in some third-party apps).
 
 ---
+
+## TV guide (EPG)
+
+Since v1.4.25 the web UI has a **TV guide** tab: `http://<homebridge-ip>:<port>/epg` (default port `8999`, or your `serverPort`; the exact URL is printed in the Homebridge log at start-up).
+
+### Setup
+
+1. In the plugin settings (Homebridge UI) open **TV guide (EPG)** and add one or more XMLTV guide URLs (`.xml` or `.xml.gz`). Free guides for 69 countries: [iptv-epg.org/guides](https://iptv-epg.org/guides), e.g. `https://iptv-epg.org/files/epg-it.xml`. M3U playlists are not guides and are rejected.
+2. Restart Homebridge. The guide is downloaded about 15 s later, then every `refreshHours`; **Download guide now** forces a refresh.
+
+| Option (platform, `epg` block) | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Shows the TV guide tab when at least one URL is set. |
+| `urls` | none | XMLTV guide URLs. When the same channel is in several sources, the first source wins (after the TV's own country). |
+| `refreshHours` | `12` | Download interval (1–168). |
+| `siriToken` | none | Enables spoken questions from an Apple Shortcut (see below). At least 12 characters. |
+
+Sources are configured only in the plugin settings, never through the web page.
+
+### Using the guide
+
+- **My TV** shows the TV channels selected in the Channel Selector (radio excluded) with their number on the remote (LCN). The channel on the TV is highlighted and listed first; the programme on air shows a progress bar and the time left.
+- **Double-click** a programme to switch the TV to that channel (the TV is switched on if needed).
+- The **country buttons** show each country's whole guide, also channels your TV does not receive.
+- **Channel matching** (bottom of the page) lists every TV channel and the guide channel it uses. Channels are matched automatically by name and guide id, preferring the TV's own country; use **Change** to pick a different guide channel (also for automatic ones) and **Use automatic** to undo. Programme data is never invented: channels without a guide are listed under *Needs attention*.
+
+### Ask Siri about the TV guide (Italian)
+
+The plugin answers spoken questions about the guide **without any AI or cloud service**: an Apple Shortcut dictates the question, sends it to the plugin and reads the answer aloud. The plugin understands a fixed Italian grammar and only answers with programmes present in the guide; when a question is unclear it asks you to rephrase.
+
+Examples: *"cosa c'è adesso"*, *"cosa c'è stasera su Rai 1"*, *"cosa danno sul 9 stasera"*, *"che film ci sono dopo le 21"*, *"documentari stasera"*, *"cosa fanno su Canale 5 domani sera"*, *"quando fanno Affari tuoi"*, *"a che ora c'è il Tg1"*.
+
+1. In the plugin settings → **TV guide (EPG)** → *Siri / Shortcuts token*, enter at least 12 random characters and restart Homebridge. The log shows the address, e.g. `http://192.168.1.10:8999/api/epg/ask?tv=TV55`.
+2. Create a Shortcut on the iPhone:
+   1. **Dictate Text** (language: Italian).
+   2. **URL Encode** the dictated text.
+   3. **Get Contents of URL**: `http://<homebridge-ip>:<port>/api/epg/ask?tv=<TV name>&q=` followed by the encoded text; method GET; header `X-Token` = your token.
+   4. **Get Dictionary Value**: key `spokenResponse`.
+   5. **Speak Text**: the dictionary value.
+3. Name it for example **"Guida TV"**, then say *"Hey Siri, Guida TV"* and ask your question.
+
+Limits: Siri starts the Shortcut by its name, then you speak the question (a free conversation with Siri is not possible from Homebridge). The iPhone must reach Homebridge on the local network or through your VPN; do not forward the port to the Internet. Up to 30 questions per minute.
 
 ## Troubleshooting
 

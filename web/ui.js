@@ -114,6 +114,7 @@
         '<a href="' + link('/') + '" class="' + (opts.active === 'channels' ? 'active' : '') + '">' + icon('list') + 'Channels &amp; inputs</a>' +
         '<a href="' + link('/pair') + '" class="' + (opts.active === 'pairing' ? 'active' : '') + '">' + icon('key') + 'Pairing &amp; device</a>' +
         '<a href="' + link('/recordings') + '" class="' + (opts.active === 'recordings' ? 'active' : '') + '">' + icon('rec') + 'Recordings</a>' +
+        '<a href="' + link('/epg') + '" class="' + (opts.active === 'epg' ? 'active' : '') + '">' + icon('list') + 'TV guide</a>' +
         '<a href="' + link('/discover') + '" class="' + (opts.active === 'discover' ? 'active' : '') + '">' + icon('radar') + 'Discover TVs</a>' +
       '</div></nav>';
 

@@ -1,7 +1,7 @@
 {
   "pluginAlias": "BraviaPlatform",
   "pluginType": "platform",
-  "headerDisplay": "After restarting Homebridge, check the log for the web UI URL (default port: 8999). Open that address to enter the PIN shown on your TV, then use the same address to access the Channel Selector UI.",
+  "headerDisplay": "After restarting Homebridge, check the log for the web UI URL (default port: 8999). Open that address to enter the PIN shown on your TV, then use the same address to access the Channel Selector UI. If the TV guide (EPG) is configured, the guide is at the same address under /epg (e.g. http://<homebridge-ip>:8999/epg); the exact URL is printed in the log at start-up.",
   "footerDisplay": "For documentation please see https://github.com/diegoweb100/homebridge-bravia-enhanced",
   "schema": {
     "autoscan": {
@@ -124,7 +124,9 @@
             "description": "Picture modes exposed as switches. Default: cinema, game, sports. Your TV's modes are listed in the plugin web page (Pairing & device → Diagnostics).",
             "type": "array",
             "required": false,
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "volumeAccessoryType": {
             "title": "Volume accessory type",
@@ -132,8 +134,18 @@
             "type": "string",
             "default": "lightbulb",
             "oneOf": [
-              { "title": "Lightbulb (default)", "enum": ["lightbulb"] },
-              { "title": "Fan (not affected by \"turn off all the lights\")", "enum": ["fan"] }
+              {
+                "title": "Lightbulb (default)",
+                "enum": [
+                  "lightbulb"
+                ]
+              },
+              {
+                "title": "Fan (not affected by \"turn off all the lights\")",
+                "enum": [
+                  "fan"
+                ]
+              }
             ],
             "required": false
           },
@@ -161,8 +173,18 @@
             "type": "string",
             "default": "speaker",
             "oneOf": [
-              { "title": "Speaker", "enum": ["speaker"] },
-              { "title": "Headphone", "enum": ["headphone"] }
+              {
+                "title": "Speaker",
+                "enum": [
+                  "speaker"
+                ]
+              },
+              {
+                "title": "Headphone",
+                "enum": [
+                  "headphone"
+                ]
+              }
             ],
             "required": false
           },
@@ -171,9 +193,24 @@
             "description": "Select TV input to display TV channels in the input list",
             "type": "string",
             "oneOf": [
-              { "title": "Satellite", "enum": ["tv:dvbs"] },
-              { "title": "Antenna", "enum": ["tv:dvbt"] },
-              { "title": "Cable", "enum": ["tv:dvbc"] }
+              {
+                "title": "Satellite",
+                "enum": [
+                  "tv:dvbs"
+                ]
+              },
+              {
+                "title": "Antenna",
+                "enum": [
+                  "tv:dvbt"
+                ]
+              },
+              {
+                "title": "Cable",
+                "enum": [
+                  "tv:dvbc"
+                ]
+              }
             ],
             "required": false
           },
@@ -201,7 +238,171 @@
               "title": "Source Name",
               "type": "string"
             }
+          },
+          "hideDisconnectedInputs": {
+            "title": "Hide disconnected HDMI inputs",
+            "description": "Hide HDMI inputs with nothing connected from the Home app input list.",
+            "type": "boolean",
+            "default": false
+          },
+          "wolMode": {
+            "title": "Wake-on-LAN mode",
+            "description": "auto: local broadcast. directed-broadcast: send to the subnet broadcast address (needed when Homebridge and the TV are on different VLANs). disabled: REST power-on only. Default: auto, or directed-broadcast when a WOL address is set.",
+            "type": "string",
+            "oneOf": [
+              {
+                "title": "Auto",
+                "enum": [
+                  "auto"
+                ]
+              },
+              {
+                "title": "Directed broadcast (cross-VLAN)",
+                "enum": [
+                  "directed-broadcast"
+                ]
+              },
+              {
+                "title": "Disabled",
+                "enum": [
+                  "disabled"
+                ]
+              }
+            ],
+            "required": false
+          },
+          "woladdress": {
+            "title": "WOL broadcast address",
+            "description": "Broadcast address for directed broadcast, e.g. 192.168.11.255 (NOT the TV IP). Derived from the TV IP when empty.",
+            "type": "string",
+            "format": "ipv4",
+            "placeholder": "192.168.11.255",
+            "required": false
+          },
+          "wolBurstCount": {
+            "title": "WOL burst count",
+            "description": "Magic packets sent per power-on attempt. Default 5.",
+            "type": "integer",
+            "placeholder": "5",
+            "minimum": 1,
+            "required": false
+          },
+          "wolBurstInterval": {
+            "title": "WOL burst interval (ms)",
+            "description": "Delay between magic packets. Default 500.",
+            "type": "integer",
+            "placeholder": "500",
+            "minimum": 50,
+            "required": false
+          },
+          "wakeWaitMaxMs": {
+            "title": "Wake wait max (ms)",
+            "description": "How long to wait for the TV to answer after WOL. Default 45000.",
+            "type": "integer",
+            "placeholder": "45000",
+            "minimum": 1000,
+            "required": false
+          },
+          "wakeWaitIntervalMs": {
+            "title": "Wake wait poll interval (ms)",
+            "description": "Power-status poll interval while waiting after WOL. Default 2000.",
+            "type": "integer",
+            "placeholder": "2000",
+            "minimum": 250,
+            "required": false
+          },
+          "postWakePollRate": {
+            "title": "Post-wake poll rate (ms)",
+            "description": "Faster status polling right after the TV wakes. Default 2000.",
+            "type": "integer",
+            "placeholder": "2000",
+            "minimum": 250,
+            "required": false
+          },
+          "postWakePollWindow": {
+            "title": "Post-wake poll window (ms)",
+            "description": "Duration of the faster polling after wake. Default 30000.",
+            "type": "integer",
+            "placeholder": "30000",
+            "minimum": 0,
+            "required": false
+          },
+          "postWakeScanDelay": {
+            "title": "Post-wake scan delay (ms)",
+            "description": "Delay before the channel/input scan after wake. Default 3000.",
+            "type": "integer",
+            "placeholder": "3000",
+            "minimum": 0,
+            "required": false
+          },
+          "updaterate": {
+            "title": "Status poll rate, TV on (ms)",
+            "description": "Default 5000.",
+            "type": "integer",
+            "placeholder": "5000",
+            "minimum": 1000,
+            "required": false
+          },
+          "standbyUpdateRate": {
+            "title": "Status poll rate, TV in standby (ms)",
+            "description": "Default 25000.",
+            "type": "integer",
+            "placeholder": "25000",
+            "minimum": 1000,
+            "required": false
+          },
+          "channelupdaterate": {
+            "title": "Channel refresh interval (ms)",
+            "description": "Periodic channel list refresh. 0 disables it. Default 30000.",
+            "type": "integer",
+            "placeholder": "30000",
+            "minimum": 0,
+            "required": false
+          },
+          "starttimeout": {
+            "title": "Start timeout (ms)",
+            "description": "Default 5000.",
+            "type": "integer",
+            "placeholder": "5000",
+            "minimum": 500,
+            "required": false
           }
+        }
+      }
+    },
+    "epg": {
+      "title": "TV guide (EPG)",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "title": "Enable TV guide",
+          "type": "boolean",
+          "default": true,
+          "description": "Shows the 'TV guide' tab in the plugin web UI at http://<homebridge-ip>:<port>/epg (default port 8999; the exact URL is printed in the Homebridge log at start-up). Uses the TV channels selected in the Channel Selector. A 'Download guide now' button on that page forces a refresh."
+        },
+        "urls": {
+          "title": "XMLTV sources",
+          "type": "array",
+          "description": "One or more XMLTV URLs (.xml or .xml.gz). The first source has priority when several provide the same channel. Configured only here, never through the plugin web page. Free XMLTV guides for 69 countries: https://iptv-epg.org/guides (e.g. Italy: https://iptv-epg.org/files/epg-it.xml, Switzerland: https://iptv-epg.org/files/epg-ch.xml). Use XMLTV guides, not M3U playlists.",
+          "items": {
+            "type": "string",
+            "title": "XMLTV URL",
+            "pattern": "^https?://",
+            "placeholder": "https://example.org/guide.xml.gz"
+          }
+        },
+        "refreshHours": {
+          "title": "Refresh every (hours)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 168,
+          "placeholder": "12"
+        },
+        "siriToken": {
+          "title": "Siri / Shortcuts token",
+          "type": "string",
+          "minLength": 12,
+          "description": "Optional. Enables spoken TV-guide questions in Italian from an Apple Shortcut (e.g. \"cosa c'è stasera su Rai 1?\") at http://<homebridge-ip>:<port>/api/epg/ask. At least 12 random characters; the Shortcut sends it in the X-Token header. Leave empty to keep the feature off. LAN/VPN only: do not expose the port to the Internet."
         }
       }
     }
@@ -209,6 +410,24 @@
   "form": [
     "autoscan",
     "discoveryRange",
+    {
+      "type": "fieldset",
+      "title": "TV guide (EPG)",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        "epg.enabled",
+        {
+          "key": "epg.urls",
+          "type": "array",
+          "items": [
+            "epg.urls[]"
+          ]
+        },
+        "epg.refreshHours",
+        "epg.siriToken"
+      ]
+    },
     {
       "key": "tvs",
       "items": [
@@ -233,6 +452,29 @@
         "tvs[].functionsAccessory",
         "tvs[].controlsAccessory",
         "tvs[].controlsScenes",
+        {
+          "type": "section",
+          "title": "Advanced: power, Wake-on-LAN and polling",
+          "expandable": true,
+          "expanded": false,
+          "items": [
+            "tvs[].hideDisconnectedInputs",
+            "tvs[].wolMode",
+            "tvs[].woladdress",
+            "tvs[].wolBurstCount",
+            "tvs[].wolBurstInterval",
+            "tvs[].wakeWaitMaxMs",
+            "tvs[].wakeWaitIntervalMs",
+            "tvs[].postWakePollRate",
+            "tvs[].postWakePollWindow",
+            "tvs[].postWakeScanDelay",
+            "tvs[].updaterate",
+            "tvs[].standbyUpdateRate",
+            "tvs[].channelupdaterate",
+            "tvs[].starttimeout"
+          ],
+          "key": "tvs[]"
+        },
         "tvs[].debug",
         {
           "key": "tvs[].applications",
@@ -247,7 +489,9 @@
         },
         {
           "key": "tvs[].sources",
-          "items": ["tvs[].sources[]"]
+          "items": [
+            "tvs[].sources[]"
+          ]
         }
       ]
     }

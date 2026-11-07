@@ -6,6 +6,25 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.25] - 2026-11-07
+
+### Added
+
+- **TV guide (EPG).** New **TV guide** tab in the web UI (`http://<homebridge-ip>:<port>/epg`; the exact URL is printed in the Homebridge log at start-up next to the other web UI addresses).
+  - **Sources**: one or more XMLTV guides (`.xml` or `.xml.gz`) configured **only** in the plugin settings (Homebridge UI → *TV guide (EPG)*), never through the web page. Free guides for 69 countries: [iptv-epg.org/guides](https://iptv-epg.org/guides). Downloaded about 15 s after start and then every `refreshHours` (default 12), or on demand with **Download guide now** (at most once a minute). The last valid guide is kept in `epg-cache.json` when a source is unavailable. An M3U playlist entered by mistake is reported as such. Programme data is never invented.
+  - **My TV**: the TV channels selected in the Channel Selector (radio excluded), each with its number on the remote (LCN). The channel on the TV is highlighted and listed first; the programme on air shows a progress bar and the time left; the current time is shown above the guide. Views: now and next (default), tonight, next 6 h, next 24 h; search by title, description and category.
+  - **Double-click to watch**: double-clicking a programme in My TV switches the TV to that channel (the TV is switched on first if needed). Only channels selected for that TV are accepted.
+  - **Country view**: one button per country found in the guide sources shows that country's whole guide, including channels the TV does not receive.
+  - **Channel matching**: TV channels are matched to guide channels by name (ignoring case, accents, HD suffixes and country prefixes such as "IT - ") and by guide id ("Rai1.it"). When a name exists in several countries the TV's own country (detected from its channels) wins, then the first source; anything still ambiguous is never guessed. The *Channel matching* panel lists every TV channel with its LCN, the guide channel used and whether the link is automatic, manual, missing or ambiguous; any link can be changed with **Change** and a manual link reset with **Use automatic** (stored per TV in `epg-map-<TV>.json`). Filters: All / Needs attention / Manual.
+- **Ask Siri about the TV guide (Italian, no AI).** Read-only endpoint `/api/epg/ask` for an Apple Shortcut. It understands a fixed Italian grammar (adesso, stasera, domani, "dopo le 21", "alle 22", a channel name or number, film / calcio / serie / notizie / documentari, "quando fanno <titolo>") and answers with a `spokenResponse` built only from guide data; unclear or ambiguous questions get a clarification. Off unless a *Siri / Shortcuts token* is set; the token is sent in the `X-Token` header; 30 questions per minute. Setup in the README.
+- **Advanced settings in the Homebridge UI.** Options that had to be typed into config.json by hand are now in the plugin settings, in a collapsed *Advanced: power, Wake-on-LAN and polling* section of each TV: `wolMode`, `woladdress`, `wolBurstCount`, `wolBurstInterval`, `wakeWaitMaxMs`, `wakeWaitIntervalMs`, `postWakePollRate`, `postWakePollWindow`, `postWakeScanDelay`, `updaterate`, `standbyUpdateRate`, `channelupdaterate`, `starttimeout` and `hideDisconnectedInputs`. Defaults are unchanged and existing configurations keep working as before.
+
+### Fixed
+
+- **Homebridge stopped at start-up with an empty TV entry** (a TV row without name or IP in the settings). Such entries are now skipped with a warning in the log.
+
+---
+
 ## [1.4.24] - 2026-10-19
 
 ### Added

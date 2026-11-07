@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark">
+  <title>TV guide · Bravia Enhanced</title>
+  <link rel="stylesheet" href="/web/ui.css">
+  <style>
+    .epg-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 14px}
+    .epg-bar input,.epg-bar select{font:inherit;padding:8px 10px;border-radius:10px;border:1px solid rgba(128,128,128,.35);background:transparent;color:inherit}
+    .epg-bar input{flex:1;min-width:180px}
+    /* TV guide uses a wider page than the other tabs */
+    main,.hero .in,nav.tabs .in{max-width:1680px}
+    main{padding-left:12px;padding-right:12px}
+    main .panel{padding:16px 18px}
+    .epg-ch{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:10px 0;border-top:1px solid rgba(128,128,128,.2)}
+    .epg-name small{display:block;font-size:12px;opacity:.75;margin-top:2px}
+    .epg-nl{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+    .epg-nl b{font-size:14px}
+    .epg-lcn{flex:none;font-size:11px;font-weight:600;letter-spacing:.02em;padding:1px 6px;border-radius:6px;background:rgba(128,128,128,.14);opacity:.85;font-variant-numeric:tabular-nums}
+    .epg-list{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+    .epg-p{flex:0 0 230px;border-radius:10px;padding:8px 10px;background:rgba(128,128,128,.10)}
+    .epg-ch.playing{background:rgba(46,160,67,.12);border-radius:12px;padding:10px;outline:1px solid rgba(46,160,67,.5)}
+    .epg-p.can-play{cursor:pointer;user-select:none;transition:transform .08s}.epg-p.can-play:hover{outline:1px solid rgba(128,128,128,.45)}.epg-p.sending{opacity:.55;transform:scale(.98)}.epg-p.now{background:rgba(52,140,255,.16);outline:1px solid rgba(52,140,255,.45)}
+    .epg-p .t{font-size:12px;opacity:.7}.epg-p .n{font-weight:600;margin:2px 0}.epg-p .d{font-size:12px;opacity:.75;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+    .cty{padding:4px 12px;border-radius:999px;border:1px solid rgba(128,128,128,.35);background:transparent;color:inherit;font:inherit;cursor:pointer}
+    .cty.on{background:rgba(52,140,255,.18);border-color:rgba(52,140,255,.6)}
+    .epg-prog{height:4px;border-radius:2px;background:rgba(128,128,128,.25);margin:6px 0 2px;overflow:hidden}
+    .epg-prog i{display:block;height:100%;background:#2f80ed;border-radius:2px}
+    .epg-clock{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600;opacity:.8}
+    .epg-muted{opacity:.7;font-size:13px}
+    .cv-sum{margin:4px 0 14px}.cv-big{font-size:15px;margin-bottom:6px}.cv-big b{font-size:22px}
+    .cv-meter{height:8px;border-radius:4px;background:rgba(128,128,128,.2);overflow:hidden;margin-bottom:6px}
+    .cv-meter i{display:block;height:100%;background:#2ea043}
+    .cv-tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+    .cv-row{display:grid;grid-template-columns:44px minmax(140px,1.1fr) minmax(160px,1.4fr) 110px minmax(120px,auto);gap:10px;align-items:center;padding:8px 0;border-top:1px solid rgba(128,128,128,.18)}
+    .cv-lcn{font-variant-numeric:tabular-nums;opacity:.7;text-align:right}
+    .cv-guide small{display:block}
+    .cv-badge{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px}
+    .cv-badge.ok{background:rgba(46,160,67,.15)}.cv-badge.man{background:rgba(52,140,255,.18)}.cv-badge.bad{background:rgba(218,54,51,.16)}
+    .cv-act{display:flex;justify-content:flex-end}
+    .cv-edit{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+    .cv-edit input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid rgba(128,128,128,.35);background:transparent;color:inherit;min-width:200px}
+    .cv-src{margin-top:12px}.cv-src summary{cursor:pointer;opacity:.8}.cv-src div{margin:4px 0;font-size:13px}
+    .cv-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.cv-dot.ok{background:#2ea043}.cv-dot.bad{background:#da3633}
+    @media (max-width:700px){.epg-ch{grid-template-columns:1fr}.epg-p{flex-basis:180px}.cv-row{grid-template-columns:36px 1fr auto}.cv-guide{grid-column:2/4}.cv-row>div:nth-child(4){grid-column:2}.cv-act{grid-column:3}}
+  </style>
+</head>
+<body>
+  <div id="hdr"></div>
+  <main>
+    <section class="panel">
+      <div class="epg-bar">
+        <input id="q" type="search" placeholder="Search programme, film, match…">
+        <select id="range">
+          <option value="now" selected>Now and next</option>
+          <option value="tonight">Tonight (20:00–24:00)</option>
+          <option value="6">Next 6 hours</option>
+          <option value="24">Next 24 hours</option>
+        </select>
+        <button id="refresh" class="btn" type="button">Download guide now</button>
+      </div>
+      <div id="cty" class="epg-bar"></div>
+      <div id="epg"><p class="epg-muted">Loading…</p></div>
+    </section>
+    <section class="panel">
+      <h2>Channel matching</h2>
+      <div id="cov" class="epg-muted">–</div>
+      <datalist id="gch"></datalist>
+    </section>
+  </main>
+  <script src="/web/ui.js"></script>
+  <script src="/web/epg.js"></script>
+</body>
+</html>

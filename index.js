@@ -14,6 +14,8 @@ const TV_IDENTIFIER_BASE = 1000;
 // HAP limit is 100 services per accessory: AccessoryInformation + Television +
 // TelevisionSpeaker leave room for 97 InputSource services.
 const MAX_HOMEKIT_INPUTS = 97;
+const EPG = require('./lib/epg');
+const EPGQuery = require('./lib/epg-query');
 // Sony pairing cookies last 14 days (Set-Cookie Max-Age=1209600).
 const COOKIE_DEFAULT_LIFETIME_MS = 14 * 86400000;
 
@@ -356,6 +358,8 @@ class BraviaPlatform {
     // warning in the log. Entries with enabled:false are loaded but ignored.
     this.autoscan = config.autoscan === true;
     this.discoveryRange = config.discoveryRange || null; // string or string[]
+    // v1.4.25: TV guide (XMLTV). Sources live only in config.json (platform "epg" block).
+    try { EPG.configure(config.epg, function (m) { log('[homebridge-bravia-enhanced] ' + m); }, STORAGE_PATH); } catch (e) { log('[homebridge-bravia-enhanced] EPG init error: ' + e); }
     this._effectiveTvs = Array.isArray(config.tvs) ? config.tvs.slice() : [];
     if (this.autoscan) {
       try {
@@ -421,6 +425,12 @@ class BraviaPlatform {
     api.on('didFinishLaunching', function () {
       if (self.debug) self.log('Platform launched');
       self._effectiveTvs.forEach(function (tv) {
+        // v1.4.25: skip incomplete entries (e.g. an empty TV row added in the
+        // Homebridge UI) instead of crashing Homebridge at start-up.
+        if (!tv || !tv.name || !tv.ip) {
+          self.log('[homebridge-bravia-enhanced] ⚠️  Skipping a TV entry without name or IP in the plugin settings. Remove the empty TV from the settings.');
+          return;
+        }
         if (self.devices.find(device => device.name === tv.name) == undefined) {
           if (self.debug) self.log('Registering TV: ' + tv.name);
           self.devices.push(new SonyTV(self, tv));
@@ -4465,6 +4475,108 @@ class SonyTV {
         self.serveFile(res, path.join(__dirname, 'web', 'channel-selector.js'), 'application/javascript');
         return;
       }
+      // v1.4.25: TV guide page (read-only; sources are configured only in config.json).
+      if (pathname === '/epg') { self.serveFile(res, path.join(__dirname, 'web', 'epg.html'), 'text/html'); return; }
+      if (pathname === '/web/epg.js') { self.serveFile(res, path.join(__dirname, 'web', 'epg.js'), 'application/javascript'); return; }
+      if (pathname === '/api/epg/refresh' && req.method === 'POST') {
+        // Downloads only the sources configured in config.json; throttled.
+        return self.sendJSON(res, EPG.requestRefresh());
+      }
+      // v1.4.25: spoken TV-guide questions for Siri Shortcuts (Italian, no AI).
+      // Read-only, token required (epg.siriToken in the plugin settings), rate limited.
+      if (pathname === '/api/epg/ask') {
+        const ask = (question, token) => {
+          if (!EPG.hasToken()) { res.statusCode = 403; return self.sendJSON(res, { success: false, spokenResponse: 'Le domande vocali non sono attive: imposta il token Siri nelle impostazioni del plugin.' }); }
+          if (!EPG.checkToken(String(token || ''))) { res.statusCode = 401; return self.sendJSON(res, { success: false, spokenResponse: 'Token non valido.' }); }
+          const nowMs = Date.now();
+          self._askHits = (self._askHits || []).filter((t) => nowMs - t < 60000);
+          if (self._askHits.length >= 30) { res.statusCode = 429; return self.sendJSON(res, { success: false, spokenResponse: 'Troppe richieste, riprova tra un minuto.' }); }
+          self._askHits.push(nowMs);
+          const qtext = String(question || '').slice(0, 300);
+          let sel = [];
+          try {
+            const j = JSON.parse(fs.readFileSync(self.selectedChannelsPath, 'utf8'));
+            let map = {}; try { map = JSON.parse(fs.readFileSync(STORAGE_PATH + '/epg-map-' + self.name + '.json', 'utf8')); } catch (e2) { /* none */ }
+            let nums = self._dispNums || null;
+            if (!nums) { try { nums = JSON.parse(fs.readFileSync(self.fullScanCachePath, 'utf8')).dispNums || {}; } catch (e3) { nums = {}; } }
+            sel = (j.channels || []).filter((c) => c && typeof c.uri === 'string' && c.uri.indexOf('tv:') === 0 && c.sourceType !== 'radio' && !/\bradio\b/i.test(c.name || ''))
+              .map((c) => ({ name: c.name, uri: c.uri, lcn: nums[c.uri] || null, map: map[c.uri] || null }));
+          } catch (e) { /* no selection */ }
+          const v = EPG.view(sel, nowMs - 3 * 3600 * 1000, nowMs + 72 * 3600 * 1000);
+          let out;
+          try { out = EPGQuery.answer(qtext, v.channels, nowMs); } catch (e) { out = { success: false, spokenResponse: 'Non sono riuscito a rispondere.' }; }
+          if (!v.updated) out.spokenResponse = 'La guida non è ancora stata scaricata.';
+          return self.sendJSON(res, out);
+        };
+        if (req.method === 'GET') return ask(urlObject.query.q, req.headers['x-token'] || urlObject.query.token);
+        if (req.method === 'POST') {
+          let body = '';
+          req.on('data', (c) => { body += c; if (body.length > 2048) req.destroy(); });
+          req.on('end', () => { let q = {}; try { q = JSON.parse(body); } catch (e) { q = { q: body }; } ask(q.q || q.question, req.headers['x-token'] || q.token); });
+          return;
+        }
+      }
+      // v1.4.25: double-click on the TV guide switches the TV to that channel.
+      // Only channels selected for this TV are accepted; the TV is woken if needed.
+      if (pathname === '/api/epg/play' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (c) => { body += c; if (body.length > 2048) req.destroy(); });
+        req.on('end', () => {
+          let q = {}; try { q = JSON.parse(body); } catch (e) { return self.sendJSON(res, { success: false, message: 'Invalid request' }); }
+          const uri = typeof q.uri === 'string' ? q.uri : '';
+          let ok = false; let name = uri;
+          try {
+            const j = JSON.parse(fs.readFileSync(self.selectedChannelsPath, 'utf8'));
+            const c = (j.channels || []).find((x) => x && x.uri === uri && uri.indexOf('tv:') === 0);
+            if (c) { ok = true; name = c.name; }
+          } catch (e) { /* no selection */ }
+          if (!ok) return self.sendJSON(res, { success: false, message: 'This channel is not selected for this TV' });
+          const wasOn = !!self.power;
+          self.currentUri = uri;
+          self.setPlayContent(uri);
+          self.log('[' + self.name + '] 📺 TV guide: switching to ' + name + (wasOn ? '' : ' (waking the TV)'));
+          self.sendJSON(res, { success: true, message: (wasOn ? 'Switching to ' : 'Turning the TV on and switching to ') + name });
+        });
+        return;
+      }
+      if (pathname === '/api/epg/guide-channels' && req.method === 'GET') { return self.sendJSON(res, EPG.guideChannels()); }
+      if (pathname === '/api/epg/map' && req.method === 'POST') {
+        // Manual 1:1 link between a TV channel (by URI) and a guide channel id; empty id removes it.
+        let body = '';
+        req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+        req.on('end', () => {
+          try {
+            const q = JSON.parse(body); const f = STORAGE_PATH + '/epg-map-' + self.name + '.json';
+            if (typeof q.uri !== 'string' || q.uri.indexOf('tv:') !== 0) return self.sendJSON(res, { success: false, message: 'invalid channel' });
+            let map = {}; try { map = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { /* new file */ }
+            if (q.id) map[q.uri] = String(q.id).slice(0, 200); else delete map[q.uri];
+            fs.writeFileSync(f, JSON.stringify(map, null, 2));
+            self.sendJSON(res, { success: true });
+          } catch (e) { self.sendJSON(res, { success: false, message: 'bad request' }); }
+        });
+        return;
+      }
+      if (pathname === '/api/epg' && req.method === 'GET') {
+        let sel = [];
+        try {
+          const j = JSON.parse(fs.readFileSync(self.selectedChannelsPath, 'utf8'));
+          let map = {};
+          try { map = JSON.parse(fs.readFileSync(STORAGE_PATH + '/epg-map-' + self.name + '.json', 'utf8')); } catch (e2) { /* no manual links */ }
+          const playing = self.power ? self.currentUri : null;
+          // Number shown on the remote (LCN), from the last channel scan.
+          let nums = self._dispNums || null;
+          if (!nums) { try { nums = JSON.parse(fs.readFileSync(self.fullScanCachePath, 'utf8')).dispNums || {}; } catch (e3) { nums = {}; } }
+          sel = (j.channels || []).filter((c) => c && typeof c.uri === 'string' && c.uri.indexOf('tv:') === 0 && c.sourceType !== 'radio' && !/\bradio\b/i.test(c.name || ''))
+            .map((c) => ({ name: c.name, uri: c.uri, lcn: nums[c.uri] || null, map: map[c.uri] || null, playing: !!playing && playing === c.uri }));
+        } catch (e) { /* no selection saved yet */ }
+        const now = Date.now();
+        let from = parseInt(urlObject.query.from, 10); let to = parseInt(urlObject.query.to, 10);
+        if (!(from > 0)) from = now; if (!(to > from)) to = from + 4 * 3600 * 1000;
+        if (to - from > 48 * 3600 * 1000) to = from + 48 * 3600 * 1000;
+        const cc = String(urlObject.query.country || '').toUpperCase();
+        if (/^[A-Z]{2}$/.test(cc)) return self.sendJSON(res, EPG.viewCountry(cc, from, to));
+        return self.sendJSON(res, EPG.view(sel, from, to));
+      }
       // v1.4.21: recordings page (USB drive on the TV) and diagnostics.
       if (pathname === '/recordings') {
         self.serveFile(res, path.join(__dirname, 'web', 'recordings.html'), 'text/html');
@@ -4713,6 +4825,11 @@ const pinRequired = !paired;
       self.log('[' + self.name + '] 🔑 Pairing : ' + _ipBase + '/pair?tv=' + encodeURIComponent(self.name));
       if (_dnBase) self.log('[' + self.name + '] 🔑 Also try: ' + _dnBase + '/pair?tv=' + encodeURIComponent(self.name));
       self.log('[' + self.name + '] 🔧 Test locally: curl http://127.0.0.1:' + _port + '/pair?tv=' + encodeURIComponent(self.name));
+      if (EPG.isEnabled()) {
+        self.log('[' + self.name + '] 📅 TV guide: ' + _ipBase + '/epg?tv=' + encodeURIComponent(self.name));
+        if (EPG.hasToken()) self.log('[' + self.name + '] 🗣️  Siri    : ' + _ipBase + '/api/epg/ask?tv=' + encodeURIComponent(self.name) + '&q=<question> (header X-Token: <siriToken>)');
+        if (_dnBase) self.log('[' + self.name + '] 📅 Also try: ' + _dnBase + '/epg?tv=' + encodeURIComponent(self.name));
+      }
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');
     });
     
