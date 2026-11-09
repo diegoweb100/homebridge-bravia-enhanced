@@ -26,7 +26,7 @@ Homebridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **HDMI input status polling**: auto-detects connected/disconnected HDMI inputs with automatic API version fallback (v1.1 to v1.0).
 - **Verbose structured logging**: easier troubleshooting with prefixed log lines (`[POWER]`, `[PAIRING]`, etc.).
 - **Volume accessory** (optional): a separate Lightbulb to control TV volume (brightness) and mute (on/off) directly from HomeKit.
-- **TV guide (EPG)** (v1.4.25+): programmes of your TV channels from free XMLTV guides, channel on the TV on top, double-click to switch channel, per-country guides, and spoken questions in Italian through Siri Shortcuts (no AI). See [TV guide (EPG)](#tv-guide-epg).
+- **TV guide (EPG)** (v1.4.25+): programmes of your TV channels from free XMLTV guides, channel on the TV on top, double-click to switch channel, per-country guides, and spoken questions through Siri Shortcuts (no AI): Italian since v1.4.25, German, English and French with ready-made Shortcuts since v1.4.26. See [TV guide (EPG)](#tv-guide-epg).
 - **Volume On-Screen Display toggle** (v1.4.12+): `volumeUI` controls whether HomeKit volume changes show the TV's native OSD slider. Off by default (silent changes).
 
 ### Compatibility and reliability
@@ -35,6 +35,7 @@ Homebridge plugin for Sony Bravia TVs (AndroidTV based ones and possibly others)
 - **Full API version auto-detection** (v1.3.0+): at boot the plugin probes every Sony endpoint via `getVersions` and `getMethodTypes` and uses the versions actually supported by your specific TV for every API call. Fixes pairing and channel scan on newer Bravia XR models where `actRegister` v1.0 or `getContentList` v1.0 are no longer accepted.
 - **WOL directed-broadcast auto-derivation** (v1.4.2+): when `woladdress` is not set, the plugin derives the subnet broadcast from the TV's IP (e.g. `192.168.11.14` becomes `192.168.11.255`). Makes WOL work across VLANs when the router has `broadcast-forward` enabled, without manual calculation.
 - **Web server always active** (v1.3.0+): the embedded HTTP server (pairing UI and Channel Selector) is always started. `enableChannelSelector` now controls only whether the Channel Selector page is exposed.
+- **No runtime dependencies** (v1.4.26+): Wake-on-LAN, UUIDs and PIN encoding use Node's built-in modules only, so there are no third-party packages to keep patched.
 - **Comprehensive debug output** (v1.4.0+): set `debug: true` per TV and the plugin produces a complete, self-contained diagnostic dump on startup: environment hints (Docker / Synology / RPi auto-detection), sanitised config, storage paths with file sizes, full capabilities table, every HTTP request/response with body and latency, detailed pairing trace, WOL trace, and global handlers for uncaught exceptions. Sensitive values (PSK, PIN, cookies, MAC) are masked.
 
 ### Robust power-on (v1.4.13+)
@@ -326,6 +327,11 @@ The TV speaker is also exposed as a HomeKit accessory (not shown in the Home app
 
 Since v1.4.25 the web UI has a **TV guide** tab: `http://<homebridge-ip>:<port>/epg` (default port `8999`, or your `serverPort`; the exact URL is printed in the Homebridge log at start-up).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/guide-dark.jpg">
+  <img alt="TV guide: the channel on the TV is highlighted and listed first, the programme on air shows a progress bar" src="docs/images/guide-light.jpg">
+</picture>
+
 ### Setup
 
 1. In the plugin settings (Homebridge UI) open **TV guide (EPG)** and add one or more XMLTV guide URLs (`.xml` or `.xml.gz`). Free guides for 69 countries: [iptv-epg.org/guides](https://iptv-epg.org/guides), e.g. `https://iptv-epg.org/files/epg-it.xml`. M3U playlists are not guides and are rejected.
@@ -334,33 +340,54 @@ Since v1.4.25 the web UI has a **TV guide** tab: `http://<homebridge-ip>:<port>/
 | Option (platform, `epg` block) | Default | Description |
 |---|---|---|
 | `enabled` | `true` | Shows the TV guide tab when at least one URL is set. |
-| `urls` | none | XMLTV guide URLs. When the same channel is in several sources, the first source wins (after the TV's own country). |
+| `urls` | none | XMLTV guide URLs. When the same channel is in several sources, the TV's own country wins, then the first source. |
 | `refreshHours` | `12` | Download interval (1–168). |
-| `siriToken` | none | Enables spoken questions from an Apple Shortcut (see below). At least 12 characters. |
+| `siriToken` | none | Enables spoken questions from Apple Shortcuts (see below). At least 12 characters. |
+| `recordMarginBefore` | `2` | Timer recordings start this many minutes early (0–30). |
+| `recordMarginAfter` | `5` | Timer recordings end this many minutes late (0–30). |
 
 Sources are configured only in the plugin settings, never through the web page.
 
 ### Using the guide
 
 - **My TV** shows the TV channels selected in the Channel Selector (radio excluded) with their number on the remote (LCN). The channel on the TV is highlighted and listed first; the programme on air shows a progress bar and the time left.
-- **Double-click** a programme to switch the TV to that channel (the TV is switched on if needed).
+- **Click** a programme to open its details (day, time, duration, categories, full description) with a **Watch** button that switches the TV to that channel; **double-click** switches right away. The TV is switched on if needed.
+- **Record** (TVs with the recording API and a USB recording drive, e.g. KD-55X9005B): the programme panel schedules a timer recording on the TV, checking conflicts first; it starts `recordMarginBefore` minutes early and ends `recordMarginAfter` minutes late (default 2 and 5) and can repeat daily when the TV supports it. Scheduled programmes show a red dot; **Cancel recording** removes the timer.
 - The **country buttons** show each country's whole guide, also channels your TV does not receive.
 - **Channel matching** (bottom of the page) lists every TV channel and the guide channel it uses. Channels are matched automatically by name and guide id, preferring the TV's own country; use **Change** to pick a different guide channel (also for automatic ones) and **Use automatic** to undo. Programme data is never invented: channels without a guide are listed under *Needs attention*.
 
-### Ask Siri about the TV guide (Italian)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/matching-dark.jpg">
+  <img alt="Channel matching panel: LCN, TV channel, guide channel, automatic or manual link, Change button" src="docs/images/matching-light.jpg">
+</picture>
 
-The plugin answers spoken questions about the guide **without any AI or cloud service**: an Apple Shortcut dictates the question, sends it to the plugin and reads the answer aloud. The plugin understands a fixed Italian grammar and only answers with programmes present in the guide; when a question is unclear it asks you to rephrase.
+### Ask Siri about the TV guide (Italian, German, English, French)
 
-Examples: *"cosa c'è adesso"*, *"cosa c'è stasera su Rai 1"*, *"cosa danno sul 9 stasera"*, *"che film ci sono dopo le 21"*, *"documentari stasera"*, *"cosa fanno su Canale 5 domani sera"*, *"quando fanno Affari tuoi"*, *"a che ora c'è il Tg1"*.
+The plugin answers spoken questions about the guide **without any AI or cloud service**: a Shortcut dictates the question, sends it to the plugin and reads the answer aloud. Each language has a fixed grammar; the plugin only answers with programmes present in the guide and asks you to rephrase when a question is unclear.
 
-1. In the plugin settings → **TV guide (EPG)** → *Siri / Shortcuts token*, enter at least 12 random characters and restart Homebridge. The log shows the address, e.g. `http://192.168.1.10:8999/api/epg/ask?tv=TV55`.
-2. Create a Shortcut on the iPhone:
-   1. **Dictate Text** (language: Italian).
-   2. **URL Encode** the dictated text.
-   3. **Get Contents of URL**: `http://<homebridge-ip>:<port>/api/epg/ask?tv=<TV name>&q=` followed by the encoded text; method GET; header `X-Token` = your token.
-   4. **Get Dictionary Value**: key `spokenResponse`.
-   5. **Speak Text**: the dictionary value.
-3. Name it for example **"Guida TV"**, then say *"Hey Siri, Guida TV"* and ask your question.
+| Language | Examples |
+|---|---|
+| Italiano | *cosa c'è adesso* · *cosa c'è stasera su Rai 1* · *che film ci sono dopo le 21* · *quando fanno Affari tuoi* |
+| Deutsch | *was läuft jetzt* · *was läuft heute Abend auf SRF 1* · *welche Filme laufen nach 21 Uhr* · *wann beginnt die Tagesschau* |
+| English | *what's on now* · *what's on tonight on BBC One* · *which movies are on after 9 pm* · *when does the news start* |
+| Français | *qu'est-ce qu'il y a maintenant* · *qu'est-ce qu'il y a ce soir sur RTS 1* · *quels films après 21 heures* · *quand commence le journal* |
+
+Channels can be named or given by number (*"sul 9"*, *"auf Kanal 7"*, *"on channel 5"*, *"sur la chaîne 2"*). For *now* and *tonight* the whole line-up of your channels is read in remote order; genre searches (films, football, series, news, documentaries, kids) return up to 10 results.
+
+**1. Enable it.** In the plugin settings → **TV guide (EPG)** → *Siri / Shortcuts token*, enter at least 12 random characters and restart Homebridge. The log then shows the address, e.g. `http://192.168.1.10:8999/api/epg/ask?tv=TV55`.
+
+**2. Install the ready-made Shortcuts** from the [`shortcuts`](shortcuts) folder (open the file on the iPhone, or AirDrop it). Each one asks on import for the plugin address (`http://<homebridge-ip>:<port>/api/epg/ask?tv=<TV name>`) and your token.
+
+| Language | Ask a question | What's on now | Tonight |
+|---|---|---|---|
+| Italiano | *Guida TV* | *Cosa c'è in TV* | *Stasera in TV* |
+| Deutsch | *TV-Programm* | *Was läuft im TV* | *Heute Abend im TV* |
+| English | *TV Guide* | *What's on TV* | *Tonight on TV* |
+| Français | *Guide TV* | *Quoi à la télé* | *Ce soir à la télé* |
+
+Then say for example *"Hey Siri, TV Guide"* and ask your question.
+
+**Or build it yourself:** *Dictate Text* → *URL Encode* → *Get Contents of URL* `http://<homebridge-ip>:<port>/api/epg/ask?tv=<TV name>&lang=<it|de|en|fr>&q=<encoded text>` with header `X-Token: <token>` → *Get Dictionary Value* `spokenResponse` → *Speak Text*. Without `lang` the language is guessed from the question.
 
 Limits: Siri starts the Shortcut by its name, then you speak the question (a free conversation with Siri is not possible from Homebridge). The iPhone must reach Homebridge on the local network or through your VPN; do not forward the port to the Internet. Up to 30 questions per minute.
 

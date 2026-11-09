@@ -6,6 +6,31 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.26] - 2026-11-09
+
+### Added
+
+- **Timer recordings from the TV guide.** On TVs that offer the recording API and have a USB recording drive, the programme panel has a **Record** button: the plugin checks conflicts with the TV's other timers first (with **Record anyway** if needed), starts a few minutes early and ends a few minutes late (`recordMarginBefore` / `recordMarginAfter` in the *TV guide (EPG)* settings, default 2 and 5 minutes), and can repeat every day when the TV supports it. Scheduled programmes show a red dot in the guide, and **Cancel recording** removes the timer from the TV. Tested on a KD-55X9005B.
+- **Siri questions in German, English and French** besides Italian (no AI). Each language has its own fixed grammar (now, tonight, tomorrow, "after 21", "at 22", a channel name or number, films / football / series / news / documentaries / kids, "when does <title> start") and its own spoken answers and error messages. The language comes from the new `lang` parameter of `/api/epg/ask` (`it`, `de`, `en`, `fr`) or is guessed from the question. Italian answers are unchanged.
+- **Ready-made Shortcuts** in the `shortcuts` folder of the repository, three per language (ask a question, what's on now, tonight): *Guida TV*, *TV-Programm*, *TV Guide*, *Guide TV* and their *now* / *tonight* versions. They ask for the plugin address and the token on import. Setup in the README.
+- **README screenshots** of the TV guide and of the channel matching panel (light and dark).
+
+### Changed
+
+- **TV guide: click for details.** A single click on a programme opens a panel with day, time, duration, categories and the full description (up to 1000 characters, previously 400), and a **Watch** button that switches the TV to that channel; Esc, Close or a click outside closes it, and programmes can be opened with the keyboard (Enter). Double-click still switches the channel right away.
+- **Siri reads the whole line-up** for *now* and *tonight* (all your channels, in remote order, one sentence per channel) instead of the first five; genre searches return up to 10 results. Channel names are spoken without "HD" and guide placeholders such as "No Data" are skipped.
+
+### Fixed
+
+- **Pairing lost after a restart with the TV in standby.** A TV in standby cannot confirm the registration (it has no screen for the PIN) and refuses it; the plugin read that as a revoked pairing, deleted the cookie and asked for the PIN again. It now checks the power status first: in standby the pairing is kept and checked again as soon as the TV is switched on.
+
+### Security
+
+- **No runtime dependencies.** `uuid` 9 (moderate advisory reported by `npm audit`: missing buffer bounds check in v3/v5/v6), `base-64` and the unmaintained `wake_on_lan` are replaced by Node's built-in `crypto`, `Buffer` and `dgram`. The Wake-on-LAN magic packet, its timing (3 packets, 100 ms apart, UDP port 9) and the PIN encoding are byte-for-byte identical. `npm audit` reports 0 vulnerabilities. Development dependency `homebridge` updated to `^2.5.0`; the plugin was started under Homebridge 2.5.0 (HAP 2.3) and 1.11 without errors or deprecation warnings, and still supports both (`engines`).
+- The npm package contains only the files the plugin needs (`files` in `package.json`): screenshots and Shortcuts stay in the repository.
+
+---
+
 ## [1.4.25] - 2026-11-07
 
 ### Added

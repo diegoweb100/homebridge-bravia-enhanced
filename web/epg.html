@@ -29,6 +29,25 @@
     .epg-prog{height:4px;border-radius:2px;background:rgba(128,128,128,.25);margin:6px 0 2px;overflow:hidden}
     .epg-prog i{display:block;height:100%;background:#2f80ed;border-radius:2px}
     .epg-clock{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600;opacity:.8}
+    .epg-p{cursor:pointer}.epg-p:focus-visible{outline:2px solid #2f80ed;outline-offset:2px}
+    .dt-backdrop{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
+    .dt-backdrop[hidden]{display:none}
+    .dt-card{width:min(620px,100%);max-height:min(85vh,760px);overflow:auto;border-radius:16px;padding:20px 22px;background:var(--card);color:inherit;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+    .dt-ch{font-size:13px;opacity:.8;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .dt-on{color:#2ea043;font-weight:600}
+    .dt-card h2{margin:8px 0 2px;font-size:22px;line-height:1.25}
+    .dt-sub{opacity:.8;margin-bottom:4px}
+    .dt-time{font-size:14px;opacity:.85;margin:8px 0}
+    .epg-prog.big{height:6px;margin:6px 0 2px}.dt-left{font-size:12px;opacity:.7}
+    .dt-cats{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.dt-cats span{font-size:12px;padding:2px 8px;border-radius:999px;background:rgba(128,128,128,.15)}
+    .dt-desc{line-height:1.55;margin:12px 0 4px;white-space:pre-line}
+    .dt-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:center;margin-top:14px;position:sticky;bottom:-20px;padding:10px 0 4px;background:inherit}
+    @media (max-width:600px){.dt-backdrop{align-items:flex-end;padding:0}.dt-card{border-radius:16px 16px 0 0;max-height:88vh}}
+    .rec-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#e5484d;margin-right:6px;vertical-align:baseline}
+    .rec-on{display:inline-flex;align-items:center;font-size:13px;font-weight:600;color:#e5484d;margin-right:auto}
+    .rec-form{margin-top:14px;padding:12px 14px;border-radius:12px;background:rgba(128,128,128,.10)}
+    .rec-form label{display:block;margin-top:8px}.rec-form select{font:inherit;margin-left:6px;padding:4px 6px;border-radius:8px}
+    .rec-warn{margin-top:8px;padding:8px 10px;border-radius:8px;background:rgba(229,72,77,.14)}
     .epg-muted{opacity:.7;font-size:13px}
     .cv-sum{margin:4px 0 14px}.cv-big{font-size:15px;margin-bottom:6px}.cv-big b{font-size:22px}
     .cv-meter{height:8px;border-radius:4px;background:rgba(128,128,128,.2);overflow:hidden;margin-bottom:6px}
@@ -70,6 +89,13 @@
       <datalist id="gch"></datalist>
     </section>
   </main>
+  <div id="epg-detail" class="dt-backdrop" hidden>
+    <div class="dt-card" role="dialog" aria-modal="true" aria-labelledby="epg-detail-title">
+      <div id="epg-detail-body"></div>
+      <div id="epg-detail-rec"></div>
+      <div id="epg-detail-actions" class="dt-actions"></div>
+    </div>
+  </div>
   <script src="/web/ui.js"></script>
   <script src="/web/epg.js"></script>
 </body>

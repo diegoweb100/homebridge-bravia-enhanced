@@ -1,12 +1,11 @@
 'use strict';
 var http = require('http');
 var url = require('url');
-var base64 = require('base-64');
-var wol = require('wake_on_lan');
+var wol = require('./lib/wol'); // v1.4.25: built-in, replaces the wake_on_lan package
 var fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto'); // v1.4.25: built-in, replaces the uuid package
 
 // Base identifier for TV tuner channels to avoid collisions with HDMI/App identifiers.
 const TV_IDENTIFIER_BASE = 1000;
@@ -728,7 +727,14 @@ class SonyTV {
       // audio
       'getVolumeInformation': '/sony/audio',
       'setAudioVolume': '/sony/audio',
-      'setAudioMute': '/sony/audio'
+      'setAudioMute': '/sony/audio',
+      // recording (v1.4.26: timer recordings from the TV guide)
+      'getRecordingStatus': '/sony/recording',
+      'getScheduleList': '/sony/recording',
+      'addSchedule': '/sony/recording',
+      'deleteSchedule': '/sony/recording',
+      'getConflictScheduleList': '/sony/recording',
+      'getSupportedRepeatType': '/sony/recording'
     };
     
     // HAP-NodeJS refuses more than 100 services per accessory. The count
@@ -1714,6 +1720,121 @@ class SonyTV {
     });
   }
 
+  // ---- v1.4.26: timer recordings from the TV guide -------------------------
+  // Sony date-time with the local offset, e.g. 2026-11-11T21:28:00+0100.
+  static sonyDateTime(ms) {
+    const d = new Date(ms); const p = (n) => String(n).padStart(2, '0');
+    const off = -d.getTimezoneOffset(); const sign = off >= 0 ? '+' : '-'; const a = Math.abs(off);
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) +
+      sign + p(Math.floor(a / 60)) + p(a % 60);
+  }
+
+  // The TV supports timer recordings when it advertises addSchedule and a USB
+  // recording drive is (or was last seen) connected.
+  canRecord() {
+    const v = this.capabilities && this.capabilities.apiVersions;
+    return !!(v && v.addSchedule) && this._hasRecStorage !== false;
+  }
+
+  // GET /api/epg/schedules — scheduled recordings (cached 60 s) + what the TV supports.
+  apiEpgSchedules(req, res) {
+    const self = this;
+    const m = EPG.recordMargins();
+    const base = { success: true, canRecord: this.canRecord(), usb: this._hasRecStorage === true, marginBefore: m.before, marginAfter: m.after };
+    if (!base.canRecord) return this.sendJSON(res, Object.assign(base, { schedules: [], repeatTypes: [] }));
+    const fresh = this._schedCache && Date.now() - this._schedCache.at < 60000;
+    if (fresh) return this.sendJSON(res, Object.assign(base, this._schedCache.data));
+    this.tvCalls({
+      list: ['/sony/recording', 'getScheduleList', this.getApiVersion('getScheduleList', '1.0'), [{ stIdx: 0, cnt: 100 }]],
+      repeat: ['/sony/recording', 'getSupportedRepeatType', this.getApiVersion('getSupportedRepeatType', '1.0'), []]
+    }, (r) => {
+      const arr = (x) => (x && Array.isArray(x.result) && Array.isArray(x.result[0]) ? x.result[0] : []);
+      const reps = arr(r.repeat).map((x) => (typeof x === 'string' ? x : (x && (x.repeatType || x.type)) || null)).filter(Boolean);
+      const data = { schedules: arr(r.list), repeatTypes: reps.length ? reps : (r.repeat && Array.isArray(r.repeat.result) && r.repeat.result.every((x) => typeof x === 'string') ? r.repeat.result : []),
+        tvError: r.list && r.list.err ? r.list.err : null };
+      if (!data.tvError) self._schedCache = { at: Date.now(), data: data };
+      self.sendJSON(res, Object.assign(base, data));
+    });
+  }
+
+  // POST /api/epg/record — body { uri, title, start, stop, repeat?, force? }.
+  // Checks conflicts first; with force=true records anyway.
+  apiEpgRecord(req, res) {
+    const self = this;
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', () => {
+      let p; try { p = JSON.parse(body || '{}'); } catch (e) { return self.sendJSON(res, { success: false, message: 'Invalid request' }); }
+      if (!self.canRecord()) return self.sendJSON(res, { success: false, message: 'This TV cannot record (no timer API or no USB recording drive)' });
+      const uri = typeof p.uri === 'string' ? p.uri : '';
+      let ch = null;
+      try { ch = (JSON.parse(fs.readFileSync(self.selectedChannelsPath, 'utf8')).channels || []).find((x) => x && x.uri === uri && uri.indexOf('tv:') === 0); } catch (e) { /* none */ }
+      if (!ch) return self.sendJSON(res, { success: false, message: 'This channel is not selected for this TV' });
+      const start = +p.start; const stop = +p.stop; const nowMs = Date.now();
+      if (!(start > 0) || !(stop > start) || stop - start > 8 * 3600e3) return self.sendJSON(res, { success: false, message: 'Invalid start or end time' });
+      if (stop < nowMs) return self.sendJSON(res, { success: false, message: 'This programme has already ended' });
+      const m = EPG.recordMargins();
+      const from = Math.max(start - m.before * 60000, nowMs + 60000);
+      const durationSec = Math.round((stop + m.after * 60000 - from) / 1000);
+      const title = String(p.title || ch.name).replace(/[\u0000-\u001f]/g, ' ').slice(0, 120);
+      const repeat = typeof p.repeat === 'string' && /^[a-zA-Z0-9_-]{1,12}$/.test(p.repeat) && p.repeat !== '1' && p.repeat !== 'none' ? p.repeat : null;
+      const req0 = { uri: uri, title: title, startDateTime: SonyTV.sonyDateTime(from), durationSec: durationSec };
+      if (repeat) req0.repeatType = repeat;
+      const add = () => {
+        // Some firmware wants the optional fields, some rejects them: try the
+        // minimal form first, then with type/quality.
+        const variants = [Object.assign({}, req0), Object.assign({ type: '', quality: '' }, req0), Object.assign({ repeatType: repeat || 'none' }, req0)];
+        let i = 0; let lastErr = null;
+        const next = () => {
+          if (i >= variants.length) {
+            self.log('[' + self.name + '] ⏺️ TV guide: recording "' + title + '" refused by the TV: ' + lastErr);
+            return self.sendJSON(res, { success: false, message: 'The TV refused the recording: ' + lastErr });
+          }
+          const prm = variants[i++];
+          self.tvCall('/sony/recording', 'addSchedule', self.getApiVersion('addSchedule', '1.0'), [prm], (err, result) => {
+            if (err) { lastErr = err; if (/authentication|unreachable/.test(err)) i = variants.length; return next(); }
+            self._schedCache = null;
+            self.log('[' + self.name + '] ⏺️ TV guide: recording scheduled "' + title + '" on ' + ch.name + ' at ' + prm.startDateTime + ' (' + Math.round(durationSec / 60) + ' min)');
+            self.sendJSON(res, { success: true, message: 'Recording scheduled: ' + title,  startDateTime: prm.startDateTime, durationSec: durationSec });
+          });
+        };
+        next();
+      };
+      if (p.force === true) return add();
+      const conf = { uri: uri, title: title, startDateTime: req0.startDateTime, durationSec: durationSec };
+      if (repeat) conf.repeatType = repeat;
+      self.tvCall('/sony/recording', 'getConflictScheduleList', self.getApiVersion('getConflictScheduleList', '1.0'), [conf], (err, result) => {
+        const list = !err && result && Array.isArray(result[0]) ? result[0] : [];
+        if (list.length) return self.sendJSON(res, { success: false, conflict: true, conflicts: list, message: 'It overlaps with another recording' });
+        add();
+      });
+    });
+  }
+
+  // POST /api/epg/record/delete — body { id }. Cancels a scheduled recording.
+  apiEpgRecordDelete(req, res) {
+    const self = this;
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 2048) req.destroy(); });
+    req.on('end', () => {
+      let p; try { p = JSON.parse(body || '{}'); } catch (e) { return self.sendJSON(res, { success: false, message: 'Invalid request' }); }
+      if (!self.canRecord()) return self.sendJSON(res, { success: false, message: 'This TV cannot record' });
+      self.tvCall('/sony/recording', 'getScheduleList', self.getApiVersion('getScheduleList', '1.0'), [{ stIdx: 0, cnt: 100 }], (err, result) => {
+        const list = !err && result && Array.isArray(result[0]) ? result[0] : [];
+        const s = list.find((x) => x && String(x.id) === String(p.id));
+        if (!s) return self.sendJSON(res, { success: false, message: err ? 'TV not reachable: ' + err : 'Scheduled recording not found' });
+        const prm = {};
+        ['id', 'type', 'uri', 'title', 'startDateTime', 'durationSec'].forEach((k) => { if (s[k] !== undefined) prm[k] = s[k]; });
+        self.tvCall('/sony/recording', 'deleteSchedule', self.getApiVersion('deleteSchedule', '1.0'), [prm], (err2) => {
+          if (err2) return self.sendJSON(res, { success: false, message: 'The TV refused: ' + err2 });
+          self._schedCache = null;
+          self.log('[' + self.name + '] ⏺️ TV guide: scheduled recording cancelled "' + (s.title || '') + '"');
+          self.sendJSON(res, { success: true, message: 'Recording cancelled: ' + (s.title || '') });
+        });
+      });
+    });
+  }
+
   // POST /api/recordings/{play|protect|delete} — body { uri, isProtected? }.
   // Only recordings on the TV's USB drive (usb:recStorage URIs) are accepted.
   apiRecordingAction(req, res, action) {
@@ -2338,6 +2459,27 @@ class SonyTV {
       if (chunk.indexOf('"error"') >= 0) {
         if (self.debug)
           self.log('[' + self.name + '] Auth error in response: ' + chunk);
+      }
+      if (chunk.indexOf('[]') < 0 && !self._standbyChecked && (self.cookie || fs.existsSync(self.cookiepath))) {
+        // v1.4.26: a TV in standby cannot confirm the registration (no screen
+        // for a PIN) and refuses it; that does not mean the pairing was removed.
+        // Keep the cookie and check again when the TV is switched on.
+        const powerPost = JSON.stringify({ id: 2, method: 'getPowerStatus', version: self.getApiVersion('getPowerStatus', '1.0'), params: [] });
+        self.makeHttpRequest(
+          function () { self._lastRegistrationUnreachable = true; },
+          function (pc) {
+            let st = null; try { const pj = JSON.parse(pc); st = pj && pj.result && pj.result[0] ? pj.result[0].status : null; } catch (e) { /* ignored */ }
+            if (st && st !== 'active') {
+              self._lastRegistrationUnreachable = true; // re-check at once when the TV comes on
+              self.authok = false;
+              self.log('[' + self.name + '] 🔑 TV in standby: registration will be checked again when it is switched on (pairing kept)');
+              return;
+            }
+            self._standbyChecked = true;
+            try { onSucces(chunk); } finally { self._standbyChecked = false; }
+          },
+          '/sony/system/', powerPost, false);
+        return;
       }
       if (chunk.indexOf('[]') < 0) {
         self.log('[' + self.name + '] Pairing required');
@@ -4224,7 +4366,7 @@ class SonyTV {
       post_options.headers['X-Auth-PSK'] = this.psk;
     }
     if (!isNull(this.pwd)) {
-      var encpin = 'Basic ' + base64.encode(':' + this.pwd);
+      var encpin = 'Basic ' + Buffer.from(':' + this.pwd, 'latin1').toString('base64');
       post_options.headers.Authorization = encpin; // {':  encpin  };
     }
     // v1.4.16: send an explicit Content-Type for every JSON-RPC call to the
@@ -4482,15 +4624,16 @@ class SonyTV {
         // Downloads only the sources configured in config.json; throttled.
         return self.sendJSON(res, EPG.requestRefresh());
       }
-      // v1.4.25: spoken TV-guide questions for Siri Shortcuts (Italian, no AI).
+      // v1.4.25: spoken TV-guide questions for Siri Shortcuts (it/de/en/fr, no AI).
       // Read-only, token required (epg.siriToken in the plugin settings), rate limited.
       if (pathname === '/api/epg/ask') {
-        const ask = (question, token) => {
-          if (!EPG.hasToken()) { res.statusCode = 403; return self.sendJSON(res, { success: false, spokenResponse: 'Le domande vocali non sono attive: imposta il token Siri nelle impostazioni del plugin.' }); }
-          if (!EPG.checkToken(String(token || ''))) { res.statusCode = 401; return self.sendJSON(res, { success: false, spokenResponse: 'Token non valido.' }); }
+        const ask = (question, token, lang) => {
+          const msg = (id) => EPGQuery.message(id, lang, question);
+          if (!EPG.hasToken()) { res.statusCode = 403; return self.sendJSON(res, { success: false, spokenResponse: msg('disabled') }); }
+          if (!EPG.checkToken(String(token || ''))) { res.statusCode = 401; return self.sendJSON(res, { success: false, spokenResponse: msg('badToken') }); }
           const nowMs = Date.now();
           self._askHits = (self._askHits || []).filter((t) => nowMs - t < 60000);
-          if (self._askHits.length >= 30) { res.statusCode = 429; return self.sendJSON(res, { success: false, spokenResponse: 'Troppe richieste, riprova tra un minuto.' }); }
+          if (self._askHits.length >= 30) { res.statusCode = 429; return self.sendJSON(res, { success: false, spokenResponse: msg('tooMany') }); }
           self._askHits.push(nowMs);
           const qtext = String(question || '').slice(0, 300);
           let sel = [];
@@ -4504,15 +4647,15 @@ class SonyTV {
           } catch (e) { /* no selection */ }
           const v = EPG.view(sel, nowMs - 3 * 3600 * 1000, nowMs + 72 * 3600 * 1000);
           let out;
-          try { out = EPGQuery.answer(qtext, v.channels, nowMs); } catch (e) { out = { success: false, spokenResponse: 'Non sono riuscito a rispondere.' }; }
-          if (!v.updated) out.spokenResponse = 'La guida non è ancora stata scaricata.';
+          try { out = EPGQuery.answer(qtext, v.channels, nowMs, lang); } catch (e) { out = { success: false, spokenResponse: msg('error') }; }
+          if (!v.updated) out.spokenResponse = msg('noGuide');
           return self.sendJSON(res, out);
         };
-        if (req.method === 'GET') return ask(urlObject.query.q, req.headers['x-token'] || urlObject.query.token);
+        if (req.method === 'GET') return ask(urlObject.query.q, req.headers['x-token'] || urlObject.query.token, urlObject.query.lang);
         if (req.method === 'POST') {
           let body = '';
           req.on('data', (c) => { body += c; if (body.length > 2048) req.destroy(); });
-          req.on('end', () => { let q = {}; try { q = JSON.parse(body); } catch (e) { q = { q: body }; } ask(q.q || q.question, req.headers['x-token'] || q.token); });
+          req.on('end', () => { let q = {}; try { q = JSON.parse(body); } catch (e) { q = { q: body }; } ask(q.q || q.question, req.headers['x-token'] || q.token, q.lang); });
           return;
         }
       }
@@ -4539,6 +4682,9 @@ class SonyTV {
         });
         return;
       }
+      if (pathname === '/api/epg/schedules' && req.method === 'GET') { return self.apiEpgSchedules(req, res); }
+      if (pathname === '/api/epg/record' && req.method === 'POST') { return self.apiEpgRecord(req, res); }
+      if (pathname === '/api/epg/record/delete' && req.method === 'POST') { return self.apiEpgRecordDelete(req, res); }
       if (pathname === '/api/epg/guide-channels' && req.method === 'GET') { return self.sendJSON(res, EPG.guideChannels()); }
       if (pathname === '/api/epg/map' && req.method === 'POST') {
         // Manual 1:1 link between a TV channel (by URI) and a guide channel id; empty id removes it.
@@ -4827,7 +4973,7 @@ const pinRequired = !paired;
       self.log('[' + self.name + '] 🔧 Test locally: curl http://127.0.0.1:' + _port + '/pair?tv=' + encodeURIComponent(self.name));
       if (EPG.isEnabled()) {
         self.log('[' + self.name + '] 📅 TV guide: ' + _ipBase + '/epg?tv=' + encodeURIComponent(self.name));
-        if (EPG.hasToken()) self.log('[' + self.name + '] 🗣️  Siri    : ' + _ipBase + '/api/epg/ask?tv=' + encodeURIComponent(self.name) + '&q=<question> (header X-Token: <siriToken>)');
+        if (EPG.hasToken()) self.log('[' + self.name + '] 🗣️  Siri    : ' + _ipBase + '/api/epg/ask?tv=' + encodeURIComponent(self.name) + '&lang=it|de|en|fr&q=<question> (header X-Token: <siriToken>)');
         if (_dnBase) self.log('[' + self.name + '] 📅 Also try: ' + _dnBase + '/epg?tv=' + encodeURIComponent(self.name));
       }
       self.log('[' + self.name + '] ════════════════════════════════════════════════════════');

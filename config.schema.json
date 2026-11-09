@@ -403,6 +403,22 @@
           "type": "string",
           "minLength": 12,
           "description": "Optional. Enables spoken TV-guide questions in Italian from an Apple Shortcut (e.g. \"cosa c'è stasera su Rai 1?\") at http://<homebridge-ip>:<port>/api/epg/ask. At least 12 random characters; the Shortcut sends it in the X-Token header. Leave empty to keep the feature off. LAN/VPN only: do not expose the port to the Internet."
+        },
+        "recordMarginBefore": {
+          "title": "Recording: start earlier (minutes)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30,
+          "placeholder": "2",
+          "description": "Timer recordings from the TV guide start this many minutes before the programme (0-30, default 2)."
+        },
+        "recordMarginAfter": {
+          "title": "Recording: end later (minutes)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30,
+          "placeholder": "5",
+          "description": "Timer recordings end this many minutes after the programme (0-30, default 5)."
         }
       }
     }
@@ -425,7 +441,9 @@
           ]
         },
         "epg.refreshHours",
-        "epg.siriToken"
+        "epg.siriToken",
+        "epg.recordMarginBefore",
+        "epg.recordMarginAfter"
       ]
     },
     {
