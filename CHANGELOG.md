@@ -6,6 +6,14 @@ For documentation please see the [README](https://github.com/diegoweb100/homebri
 
 ---
 
+## [1.4.27] - 2026-11-17
+
+### Fixed
+
+- **README screenshots on npmjs.com.** The TV guide and channel matching images used paths relative to the repository, which the npm page cannot resolve, so they showed as broken links. They now point to the images on GitHub. No changes to the plugin code.
+
+---
+
 ## [1.4.26] - 2026-11-09
 
 ### Added

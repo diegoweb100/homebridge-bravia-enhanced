@@ -328,8 +328,8 @@ The TV speaker is also exposed as a HomeKit accessory (not shown in the Home app
 Since v1.4.25 the web UI has a **TV guide** tab: `http://<homebridge-ip>:<port>/epg` (default port `8999`, or your `serverPort`; the exact URL is printed in the Homebridge log at start-up).
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/guide-dark.jpg">
-  <img alt="TV guide: the channel on the TV is highlighted and listed first, the programme on air shows a progress bar" src="docs/images/guide-light.jpg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/diegoweb100/homebridge-bravia-enhanced/main/docs/images/guide-dark.jpg">
+  <img alt="TV guide: the channel on the TV is highlighted and listed first, the programme on air shows a progress bar" src="https://raw.githubusercontent.com/diegoweb100/homebridge-bravia-enhanced/main/docs/images/guide-light.jpg">
 </picture>
 
 ### Setup
@@ -357,8 +357,8 @@ Sources are configured only in the plugin settings, never through the web page.
 - **Channel matching** (bottom of the page) lists every TV channel and the guide channel it uses. Channels are matched automatically by name and guide id, preferring the TV's own country; use **Change** to pick a different guide channel (also for automatic ones) and **Use automatic** to undo. Programme data is never invented: channels without a guide are listed under *Needs attention*.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/matching-dark.jpg">
-  <img alt="Channel matching panel: LCN, TV channel, guide channel, automatic or manual link, Change button" src="docs/images/matching-light.jpg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/diegoweb100/homebridge-bravia-enhanced/main/docs/images/matching-dark.jpg">
+  <img alt="Channel matching panel: LCN, TV channel, guide channel, automatic or manual link, Change button" src="https://raw.githubusercontent.com/diegoweb100/homebridge-bravia-enhanced/main/docs/images/matching-light.jpg">
 </picture>
 
 ### Ask Siri about the TV guide (Italian, German, English, French)
